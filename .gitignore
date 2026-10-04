@@ -1,0 +1,50 @@
+# ── Python ─────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Testing artefacts
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+# SQLite test database created by conftest.py
+Services/api/test_temp.db
+
+# Distribution / packaging
+.mypy_cache/
+.dmypy.json
+
+# ── Node / Frontend ─────────────────────────────────────────────────────────────
+Frontend/node_modules/
+Frontend/dist/
+Frontend/.vite/
+
+# ── Environment files (never commit secrets) ────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── IDE / OS ────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.DS_Store
+Thumbs.db
+
+# ── Docker ──────────────────────────────────────────────────────────────────────
+# Compose override files with local secrets
+docker-compose.override.yml

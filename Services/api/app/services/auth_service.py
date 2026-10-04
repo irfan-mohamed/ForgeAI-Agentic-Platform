@@ -27,7 +27,7 @@ class AuthService:
             name=user_in.name, 
             email=user_in.email,
             password_hash=password_hash,
-            status="pending"
+            status="active"   # Release 0: no email verification, users are active immediately
         )
         
         db.add(new_user)
