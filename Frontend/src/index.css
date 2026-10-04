@@ -1,0 +1,126 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * { box-sizing: border-box; }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    @apply bg-canvas-100 text-gray-900 font-sans;
+    min-height: 100vh;
+  }
+
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
+
+  ::-webkit-scrollbar-track { @apply bg-canvas-200; }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-forge-300 rounded-full;
+  }
+
+  ::-webkit-scrollbar-thumb:hover { @apply bg-forge-400; }
+}
+
+@layer components {
+
+  /* ── Auth page — light lavender with purple blobs ─────────────────────── */
+  .auth-bg {
+    background:
+      radial-gradient(ellipse at 75% 5%,  rgba(139, 92, 246, 0.22) 0%, transparent 52%),
+      radial-gradient(ellipse at 95% 85%, rgba(109, 40, 217, 0.14) 0%, transparent 52%),
+      radial-gradient(ellipse at 5%  90%, rgba(167, 139, 250, 0.12) 0%, transparent 52%),
+      #f8f5ff;
+  }
+
+  /* ── White glassmorphic card ──────────────────────────────────────────── */
+  .glass-card {
+    @apply bg-white/80 backdrop-blur-xl
+           border border-white/70
+           rounded-2xl
+           shadow-sm;
+    box-shadow: 0 2px 20px -4px rgba(109, 40, 217, 0.08),
+                0 1px 3px rgba(0, 0, 0, 0.04);
+  }
+
+  /* ── Light input ──────────────────────────────────────────────────────── */
+  .input-base {
+    @apply w-full px-4 py-3
+           bg-white border border-gray-200 rounded-xl
+           text-gray-900 placeholder-gray-400 text-sm
+           focus:outline-none focus:border-forge-500
+           focus:ring-2 focus:ring-forge-500/15
+           transition-all duration-200;
+  }
+
+  /* ── Primary button ────────────────────────────────────────────────────── */
+  .btn-primary {
+    @apply w-full py-3 px-6
+           bg-forge-700 hover:bg-forge-600
+           text-white font-semibold rounded-xl text-sm
+           transition-all duration-200
+           shadow-md shadow-forge-900/20
+           hover:shadow-lg hover:shadow-forge-700/30
+           active:scale-[0.98]
+           disabled:opacity-50 disabled:cursor-not-allowed
+           flex items-center justify-center gap-2;
+  }
+
+  /* ── Secondary button ──────────────────────────────────────────────────── */
+  .btn-secondary {
+    @apply py-2.5 px-5
+           bg-white hover:bg-gray-50
+           text-gray-700 font-medium rounded-xl text-sm
+           border border-gray-200 hover:border-gray-300
+           transition-all duration-200 active:scale-[0.98]
+           flex items-center justify-center gap-2 shadow-sm;
+  }
+
+  /* ── Sidebar nav item — on DARK sidebar ────────────────────────────────── */
+  .sidebar-item {
+    @apply flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium
+           text-violet-300 hover:text-white hover:bg-white/10
+           transition-all duration-150 cursor-pointer;
+  }
+
+  .sidebar-item.active {
+    @apply bg-white/15 text-white;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+  }
+
+  /* ── Badge ─────────────────────────────────────────────────────────────── */
+  .badge {
+    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
+  }
+
+  /* ── Stat card ─────────────────────────────────────────────────────────── */
+  .stat-card {
+    @apply glass-card p-5 flex flex-col gap-1;
+  }
+}
+
+@layer utilities {
+  /* ── Purple gradient text ─────────────────────────────────────────────── */
+  .text-gradient {
+    @apply bg-gradient-to-r from-forge-600 to-purple-500 bg-clip-text text-transparent;
+  }
+
+  /* ── Subtle violet glow ───────────────────────────────────────────────── */
+  .glow-forge {
+    box-shadow: 0 0 40px -8px rgba(124, 58, 237, 0.3);
+  }
+
+  /* ── Main content area background ────────────────────────────────────── */
+  .canvas-bg {
+    background:
+      radial-gradient(ellipse at 80% 10%, rgba(139, 92, 246, 0.10) 0%, transparent 50%),
+      radial-gradient(ellipse at 10% 85%, rgba(109, 40, 217, 0.07) 0%, transparent 50%),
+      theme('colors.canvas.100');
+  }
+}

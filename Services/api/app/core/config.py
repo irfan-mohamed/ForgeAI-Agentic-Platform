@@ -1,18 +1,34 @@
 import os
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    DATABASE_URL : str = "postgresql+psycopg://forgeai:Irfan%40123@localhost:5432/forgeai"
-    PROJECT_NAME : str = "ForgeAI API"
-    API_V1_STR : str = "/api/v1"
+    # ── Database ───────────────────────────────────────────────────────
+    DATABASE_URL: str = (
+        "postgresql+psycopg://forgeai:Irfan%40123@localhost:5432/forgeai"
+    )
 
-    SECRET_KEY : str = "9f82d1c68e16a2b4b457e5d8f630a1122aef912048cfc5d4b53ef1234bc56de2"
-    ALGORITHM : str = "HS256"
-    ACCESS_TOKEN_EXPIRY_MINUTES : int = 10
+    # ── API ────────────────────────────────────────────────────────────
+    PROJECT_NAME: str = "FlowForge API"
+    API_V1_STR: str = "/api/v1"
 
-    class Config:
-        case_sensitive = True
+    # ── Auth / JWT ─────────────────────────────────────────────────────
+    # Override SECRET_KEY via .env in all environments.
+    # Never commit real secrets to version control.
+    SECRET_KEY: str = "change-me-in-production-use-a-long-random-string"
+    ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRY_MINUTES: int = 60   # 1 hour; tune per environment
+    REFRESH_TOKEN_EXPIRY_DAYS: int = 7
+
+    # ── CORS ───────────────────────────────────────────────────────────
+    # Comma-separated list of allowed origins for the frontend
+    CORS_ORIGINS: list[str] = ["http://localhost:5173", "http://localhost:3000"]
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=True,
+    )
 
 
 settings = Settings()

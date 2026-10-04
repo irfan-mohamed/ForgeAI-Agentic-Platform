@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from sqlalchemy import String, func
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 
@@ -24,6 +24,7 @@ class User(Base):
         nullable=False,
     )
 
+    # active | pending | suspended
     status: Mapped[str] = mapped_column(
         String(20),
         nullable=False,
@@ -42,4 +43,11 @@ class User(Base):
         default=lambda: datetime.now(timezone.utc),
         server_default=func.now(),
         onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    # Relationships ───────────────────────────────────────────────────
+    memberships: Mapped[list["Membership"]] = relationship(  # type: ignore[name-defined]
+        "Membership",
+        back_populates="user",
+        cascade="all, delete-orphan",
     )

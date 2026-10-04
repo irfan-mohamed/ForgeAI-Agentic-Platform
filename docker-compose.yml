@@ -1,18 +1,6 @@
 services:
-  api:
-    build:
-      context: ./Services/api
-      dockerfile: Dockerfile
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./Services/api:/app
-    environment:
-      - DATABASE_URL=postgresql+psycopg://forgeai:Irfan%40123@db:5432/forgeai
-    depends_on:
-      db:
-        condition: service_healthy
 
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
   db:
     image: postgres:16-alpine
     restart: always
@@ -29,6 +17,32 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+
+  # ── Backend API ─────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: ./Services/api
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./Services/api:/app
+    environment:
+      DATABASE_URL: postgresql+psycopg://forgeai:Irfan%40123@db:5432/forgeai
+      SECRET_KEY: ${SECRET_KEY:-change-me-in-production-use-a-long-random-string}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # ── Frontend ────────────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./Frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:80"
+    depends_on:
+      - api
 
 volumes:
   postgres_data:
