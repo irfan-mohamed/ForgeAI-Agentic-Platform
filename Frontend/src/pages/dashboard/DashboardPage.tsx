@@ -21,28 +21,56 @@ function OrgCard({
   membership?: Membership;
   onSelect: (org: Organization) => void;
 }) {
+  const navigate = useNavigate();
+
   return (
-    <button
-      onClick={() => onSelect(org)}
-      className="glass-card p-5 text-left hover:border-forge-300/60 transition-all duration-200 group w-full"
-    >
-      <div className="flex items-start justify-between gap-3 mb-3">
-        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-forge-100 to-purple-100 border border-forge-200/60 flex items-center justify-center text-forge-600 font-bold text-sm flex-shrink-0 group-hover:scale-105 transition-transform">
-          {org.name.charAt(0).toUpperCase()}
+    <div className="glass-card p-5 hover:border-forge-300/60 transition-all duration-200 group w-full">
+      {/* Clickable top area — selects org in the right panel */}
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={() => onSelect(org)}
+        onKeyDown={(e) => e.key === 'Enter' && onSelect(org)}
+        className="cursor-pointer"
+      >
+        <div className="flex items-start justify-between gap-3 mb-3">
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-forge-100 to-purple-100 border border-forge-200/60 flex items-center justify-center text-forge-600 font-bold text-sm flex-shrink-0 group-hover:scale-105 transition-transform">
+            {org.name.charAt(0).toUpperCase()}
+          </div>
+          <div className="flex items-center gap-2">
+            <StatusBadge status={org.status} />
+            {membership && <RoleBadge role={membership.role} />}
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <StatusBadge status={org.status} />
-          {membership && <RoleBadge role={membership.role} />}
-        </div>
+        <h3 className="text-gray-900 font-semibold text-sm group-hover:text-forge-700 transition-colors">
+          {org.name}
+        </h3>
+        <p className="text-gray-400 text-xs mt-0.5 font-mono">/{org.slug}</p>
+        {org.description && (
+          <p className="text-gray-500 text-xs mt-2 line-clamp-2">{org.description}</p>
+        )}
       </div>
-      <h3 className="text-gray-900 font-semibold text-sm group-hover:text-forge-700 transition-colors">{org.name}</h3>
-      <p className="text-gray-400 text-xs mt-0.5 font-mono">/{org.slug}</p>
-      {org.description && (
-        <p className="text-gray-500 text-xs mt-2 line-clamp-2">{org.description}</p>
-      )}
-    </button>
+
+      {/* Repositories shortcut — separate from the select area */}
+      <div className="mt-3 pt-3 border-t border-gray-100 flex items-center justify-between">
+        <button
+          onClick={() => navigate(`/organizations/${org.id}/repositories`)}
+          className="flex items-center gap-1.5 text-xs text-forge-600 hover:text-forge-700 font-medium transition-colors"
+        >
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+              d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+          </svg>
+          Manage Repositories
+        </button>
+        <svg className="w-3.5 h-3.5 text-forge-400 opacity-0 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+        </svg>
+      </div>
+    </div>
   );
 }
+
 
 // ── Member list in the selected org panel ─────────────────────────────────────
 

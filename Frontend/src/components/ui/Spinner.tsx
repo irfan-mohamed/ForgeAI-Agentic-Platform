@@ -25,7 +25,7 @@ export function PageSpinner() {
     <div className="min-h-screen flex items-center justify-center bg-canvas-100">
       <div className="flex flex-col items-center gap-4">
         <Spinner size="lg" />
-        <p className="text-gray-500 text-sm">Loading FlowForge…</p>
+        <p className="text-gray-500 text-sm">Loading ForgeAI…</p>
       </div>
     </div>
   );

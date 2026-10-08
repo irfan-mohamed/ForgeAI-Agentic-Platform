@@ -1,0 +1,21 @@
+fastapi
+uvicorn[standard]
+pydantic-settings
+python-jose[cryptography]
+python-multipart
+sqlalchemy
+psycopg
+psycopg-binary
+
+# GitHub App integration
+PyJWT
+cryptography
+httpx
+
+# Kafka (stub mode default — flip KAFKA_ENABLED=true when Worker is ready)
+aiokafka
+
+# Testing
+pytest
+pytest-cov
+httpx

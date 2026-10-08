@@ -15,14 +15,13 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
     Assigns a unique ID to every HTTP request and emits structured
     request/response log lines at INFO level.
 
-    1. Reads ``X-Request-ID`` from the incoming headers (lets clients correlate
-       retries) or generates a fresh UUID4.
-    2. Exposes the ID on ``request.state.request_id`` for use in route handlers.
-    3. Sets ``request_id_var`` context variable so every log line emitted during
-       this request is automatically tagged with the ID by the JSON formatter.
-    4. Echoes the ID back in the ``X-Request-ID`` response header so clients
-       (and the frontend) can include it in bug reports.
-    5. Logs request start (INFO) and response (INFO with elapsed_ms).
+    - Reads ``X-Request-ID`` from incoming headers (allows client correlation)
+      or generates a fresh UUID4.
+    - Exposes the ID via ``request.state.request_id``.
+    - Sets ``request_id_var`` context variable so every log line during
+      this request is automatically tagged with the ID.
+    - Echoes the ID back in the ``X-Request-ID`` response header.
+    - Logs request start and response with elapsed_ms.
     """
 
     async def dispatch(self, request: Request, call_next) -> Response:

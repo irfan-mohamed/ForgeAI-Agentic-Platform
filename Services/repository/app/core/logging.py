@@ -17,7 +17,7 @@ class _JSONFormatter(logging.Formatter):
     - message    : the formatted message
     - logger     : logger name (module path)
     - request_id : current request ID from context
-    - extras     : any extra kwargs passed to the logger (e.g. user_id)
+    - extras     : any extra kwargs passed to the logger (e.g. repo_id)
     """
 
     _SKIP = frozenset(
@@ -39,7 +39,6 @@ class _JSONFormatter(logging.Formatter):
             "request_id": request_id_var.get(),
         }
 
-        # Bubble up any extra fields passed by the caller
         for key, val in vars(record).items():
             if key not in self._SKIP:
                 payload[key] = val
@@ -54,21 +53,17 @@ def setup_logging(level: int = logging.INFO) -> None:
     """
     Configure root logger with JSON output to stdout.
 
-    Also silences uvicorn's own handlers so they don't double-emit
-    log lines alongside our JSON formatter.  Uvicorn loggers are set
-    to propagate=True so their records still flow through our handler
-    on the root logger.
+    Silences uvicorn's own handlers so they don't double-emit log lines
+    alongside our JSON formatter.
     """
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(_JSONFormatter())
 
     root = logging.getLogger()
     root.setLevel(level)
-    # Remove any handlers added by basicConfig / uvicorn before ours runs
     root.handlers.clear()
     root.addHandler(handler)
 
-    # Prevent uvicorn from installing its own plain-text handlers
     for uvicorn_logger_name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
         uvicorn_logger = logging.getLogger(uvicorn_logger_name)
         uvicorn_logger.handlers.clear()
