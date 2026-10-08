@@ -3,11 +3,13 @@ import { AuthProvider, useAuth } from '@/context/AuthContext';
 import { PageSpinner } from '@/components/ui/Spinner';
 
 // Pages
-import { LoginPage }              from '@/pages/auth/LoginPage';
-import { RegisterPage }           from '@/pages/auth/RegisterPage';
-import { OrganizationSetupPage }  from '@/pages/setup/OrganizationSetupPage';
-import { DashboardPage }          from '@/pages/dashboard/DashboardPage';
-import { NotFoundPage }           from '@/pages/NotFoundPage';
+import { LoginPage } from '@/pages/auth/LoginPage';
+import { RegisterPage } from '@/pages/auth/RegisterPage';
+import { OrganizationSetupPage } from '@/pages/setup/OrganizationSetupPage';
+import { DashboardPage } from '@/pages/dashboard/DashboardPage';
+import { RepositoriesPage } from '@/pages/repositories/RepositoriesPage';
+import { GitHubCallbackPage } from '@/pages/github/GitHubCallbackPage';
+import { NotFoundPage } from '@/pages/NotFoundPage';
 
 // ── Route guards ──────────────────────────────────────────────────────────────
 
@@ -31,16 +33,23 @@ function AppRoutes() {
   return (
     <Routes>
       {/* Public routes */}
-      <Route path="/login"    element={<PublicRoute><LoginPage /></PublicRoute>} />
+      <Route path="/login" element={<PublicRoute><LoginPage /></PublicRoute>} />
       <Route path="/register" element={<PublicRoute><RegisterPage /></PublicRoute>} />
 
       {/* Protected routes */}
-      <Route path="/setup"     element={<PrivateRoute><OrganizationSetupPage /></PrivateRoute>} />
+      <Route path="/setup" element={<PrivateRoute><OrganizationSetupPage /></PrivateRoute>} />
       <Route path="/dashboard" element={<PrivateRoute><DashboardPage /></PrivateRoute>} />
+      <Route
+        path="/organizations/:orgId/repositories"
+        element={<PrivateRoute><RepositoriesPage /></PrivateRoute>}
+      />
+
+      {/* GitHub callback — no auth guard needed, the service validates the state token */}
+      <Route path="/github/callback" element={<GitHubCallbackPage />} />
 
       {/* Redirects */}
-      <Route path="/"  element={<Navigate to="/dashboard" replace />} />
-      <Route path="*"  element={<NotFoundPage />} />
+      <Route path="/" element={<Navigate to="/dashboard" replace />} />
+      <Route path="*" element={<NotFoundPage />} />
     </Routes>
   );
 }

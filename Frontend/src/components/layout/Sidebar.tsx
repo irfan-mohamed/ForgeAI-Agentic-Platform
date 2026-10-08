@@ -25,6 +25,20 @@ const NAV_ITEMS = [
   },
 ];
 
+// Repositories nav item is rendered separately so it can show
+// the currently-active org's repo link from the URL pattern.
+const REPO_NAV = {
+  pattern: '/organizations/',
+  label: 'Repositories',
+  icon: (
+    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
+        d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+    </svg>
+  ),
+};
+
+
 // ── Logo mark ─────────────────────────────────────────────────────────────────
 
 function LogoMark() {
@@ -35,7 +49,7 @@ function LogoMark() {
           <path d="M13 10V3L4 14h7v7l9-11h-7z" />
         </svg>
       </div>
-      <span className="font-bold text-white text-sm tracking-wide">FlowForge</span>
+      <span className="font-bold text-white text-sm tracking-wide">ForgeAI</span>
     </div>
   );
 }
@@ -45,6 +59,11 @@ function LogoMark() {
 export function Sidebar() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+
+  // Extract orgId from the current URL if we're inside an org context
+  const currentPath = window.location.pathname;
+  const orgMatch = currentPath.match(/\/organizations\/(\d+)/);
+  const activeOrgId = orgMatch ? orgMatch[1] : null;
 
   const handleLogout = () => {
     logout();
@@ -75,6 +94,30 @@ export function Sidebar() {
             {item.label}
           </NavLink>
         ))}
+
+        {/* Repositories — only visible when inside an org context */}
+        {activeOrgId && (
+          <NavLink
+            to={`/organizations/${activeOrgId}/repositories`}
+            className={({ isActive }) =>
+              cn('sidebar-item', isActive && 'active')
+            }
+          >
+            {REPO_NAV.icon}
+            {REPO_NAV.label}
+          </NavLink>
+        )}
+
+        {/* Always-visible Repositories shortcut when no org in URL */}
+        {!activeOrgId && (
+          <button
+            onClick={() => navigate('/dashboard')}
+            className={cn('sidebar-item text-left')}
+          >
+            {REPO_NAV.icon}
+            Repositories
+          </button>
+        )}
       </nav>
 
       {/* User footer */}
@@ -105,3 +148,4 @@ export function Sidebar() {
     </aside>
   );
 }
+
