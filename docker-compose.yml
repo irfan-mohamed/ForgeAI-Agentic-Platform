@@ -43,14 +43,18 @@ services:
       - "8001:8001"
     volumes:
       - ./Services/repository:/app
+      # Mount the PEM key file read-only — avoids env_file parser issues with
+      # multi-line RSA keys (Docker Compose env_file can't handle them).
+      - ./Services/repository/github-app.private-key.pem:/run/github-app.pem:ro
     environment:
       DATABASE_URL: postgresql+psycopg://forgeai:Irfan%40123@db:5432/forgeai
       SECRET_KEY: ${SECRET_KEY:-change-me-in-production-use-a-long-random-string}
-      GITHUB_APP_ID: ${GITHUB_APP_ID:-}
-      GITHUB_APP_NAME: ${GITHUB_APP_NAME:-forgeai-dev}
-      GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY:-}
-      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
-      GITHUB_CALLBACK_REDIRECT_URL: ${GITHUB_CALLBACK_REDIRECT_URL:-http://localhost:5173/github/callback}
+      GITHUB_APP_ID: ${GITHUB_APP_ID:-5224545}
+      GITHUB_APP_NAME: ${GITHUB_APP_NAME:-forgeai-local}
+      # Path to the mounted PEM file — security.py reads from this file.
+      GITHUB_APP_PRIVATE_KEY_FILE: /run/github-app.pem
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-your-webhook-secret}
+      GITHUB_CALLBACK_REDIRECT_URL: http://localhost:5173/github/callback
       KAFKA_ENABLED: ${KAFKA_ENABLED:-false}
       KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-localhost:9092}
     depends_on:

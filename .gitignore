@@ -38,6 +38,8 @@ Frontend/.vite/
 .env
 .env.*
 !.env.example
+# GitHub App private key — never commit this
+*.pem
 
 # ── IDE / OS ────────────────────────────────────────────────────────────────────
 .vscode/
