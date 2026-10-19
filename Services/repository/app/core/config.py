@@ -24,9 +24,12 @@ class Settings(BaseSettings):
 
     # ── GitHub App ────────────────────────────────────────────────────────────
     GITHUB_APP_ID: str = ""
-    GITHUB_APP_NAME: str = "forgeai-dev"
+    GITHUB_APP_NAME: str = "forgeai-local"
     # Full PEM private key (multiline). In .env use escaped newlines or a file path.
     GITHUB_APP_PRIVATE_KEY: str = ""
+    # Path to a PEM file mounted into the container (preferred for Docker).
+    # When set, this takes precedence over GITHUB_APP_PRIVATE_KEY.
+    GITHUB_APP_PRIVATE_KEY_FILE: str = ""
     # Secret used to validate X-Hub-Signature-256 on incoming webhooks.
     GITHUB_WEBHOOK_SECRET: str = ""
     # Where to redirect the user after the GitHub callback completes.

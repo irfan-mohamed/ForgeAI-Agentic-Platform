@@ -46,23 +46,47 @@ def create_github_app_jwt() -> str:
 
     The returned token is used to obtain installation access tokens.
 
-    Raises RuntimeError if GITHUB_APP_PRIVATE_KEY or GITHUB_APP_ID is not configured.
+    Private key resolution order:
+      1. GITHUB_APP_PRIVATE_KEY_FILE — path to a mounted PEM file (Docker).
+      2. GITHUB_APP_PRIVATE_KEY     — raw PEM string from env var (local dev).
+
+    Raises RuntimeError if neither is configured or GITHUB_APP_ID is missing.
     """
-    if not settings.GITHUB_APP_PRIVATE_KEY or not settings.GITHUB_APP_ID:
+    if not settings.GITHUB_APP_ID:
         raise RuntimeError(
-            "GITHUB_APP_PRIVATE_KEY and GITHUB_APP_ID must be configured "
-            "before calling create_github_app_jwt()"
+            "GITHUB_APP_ID must be configured before calling create_github_app_jwt()"
+        )
+
+    # ── Resolve the private key ───────────────────────────────────────────────
+    if settings.GITHUB_APP_PRIVATE_KEY_FILE:
+        # Docker: PEM file mounted at a path — read it directly.
+        # This is the preferred approach because Docker Compose env_file cannot
+        # handle multi-line RSA keys (the parser treats each line as KEY=VALUE).
+        try:
+            with open(settings.GITHUB_APP_PRIVATE_KEY_FILE, "r") as f:
+                private_key = f.read().strip()
+        except OSError as exc:
+            raise RuntimeError(
+                f"Could not read GitHub App private key file "
+                f"'{settings.GITHUB_APP_PRIVATE_KEY_FILE}': {exc}"
+            )
+    elif settings.GITHUB_APP_PRIVATE_KEY:
+        # Local dev: PEM stored as an env var string.
+        # Replace literal \n sequences that may have been introduced by the shell.
+        private_key = settings.GITHUB_APP_PRIVATE_KEY.replace("\\n", "\n")
+    else:
+        raise RuntimeError(
+            "Set either GITHUB_APP_PRIVATE_KEY_FILE (Docker) or "
+            "GITHUB_APP_PRIVATE_KEY (local dev) to enable GitHub App auth."
         )
 
     now = int(time.time())
     payload = {
-        "iat": now - 60,      # issued 60s ago to account for clock skew
-        "exp": now + (9 * 60),  # 9-minute expiry (GitHub max is 10)
+        "iat": now - 60,       # issued 60s ago to account for clock skew
+        "exp": now + (9 * 60), # 9-minute expiry (GitHub max is 10)
         "iss": settings.GITHUB_APP_ID,
     }
 
-    # GitHub App JWTs are signed with the App's RSA private key using RS256.
-    private_key = settings.GITHUB_APP_PRIVATE_KEY.replace("\\n", "\n")
-
     import jwt as pyjwt  # PyJWT — used for RS256 (python-jose RS256 needs extra deps)
     return pyjwt.encode(payload, private_key, algorithm="RS256")
+
