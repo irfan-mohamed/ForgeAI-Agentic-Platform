@@ -147,7 +147,7 @@ Implementation notes:
 - The worker reads `repositories`, `repository_syncs`, and
   `github_installations` through mirror models. The Repository Service
   remains the owner of those tables.
-- Embeddings use OpenAI `text-embedding-3-small` (1536 dimensions).
+- Embeddings use local `BAAI/bge-small-en-v1.5` via `fastembed` (384 dimensions).
 - Chunk size is 512 tokens with 64 tokens of overlap.
 - Unchanged files (same checksum) are not re-embedded on later syncs.
 - Progress counters on the sync record are updated every 10 files.

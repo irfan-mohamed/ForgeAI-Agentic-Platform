@@ -47,11 +47,56 @@ def _get_client():
     return QdrantClient(**kwargs)
 
 
+def _get_collection_vector_dimension(col_info: Any) -> int | None:
+    """Extract vector dimension/size from Qdrant CollectionInfo."""
+    try:
+        config = getattr(col_info, "config", None)
+        params = getattr(config, "params", None)
+        vectors = getattr(params, "vectors", None)
+        if vectors is None:
+            return None
+        if hasattr(vectors, "size") and isinstance(vectors.size, int):
+            return vectors.size
+        if isinstance(vectors, dict):
+            for v in vectors.values():
+                if hasattr(v, "size") and isinstance(v.size, int):
+                    return v.size
+                if isinstance(v, dict) and "size" in v and isinstance(v["size"], int):
+                    return v["size"]
+    except Exception as exc:
+        logger.warning("Could not extract vector dimension from CollectionInfo: %s", exc)
+    return None
+
+
+def _reset_db_knowledge_and_files() -> None:
+    """
+    Clears repository_knowledge and marks repository_files for re-indexing
+    when the Qdrant collection is recreated due to dimension mismatch.
+    """
+    try:
+        from app.db.database import get_db_session
+        from sqlalchemy import text
+
+        with get_db_session() as db:
+            db.execute(text("DELETE FROM repository_knowledge"))
+            db.execute(
+                text(
+                    "UPDATE repository_files "
+                    "SET is_indexed = false, status = 'discovered', last_error = NULL "
+                    "WHERE is_indexed = true OR status = 'failed'"
+                )
+            )
+            db.commit()
+        logger.info("Reset repository_files and cleared repository_knowledge due to collection recreation")
+    except Exception as exc:
+        logger.warning("Could not reset DB tables after collection recreation: %s", exc)
+
+
 def ensure_collection_exists() -> None:
     """
-    Creates the Qdrant collection if it doesn't already exist.
+    Creates the Qdrant collection if it doesn't already exist or if dimensions mismatch.
 
-    Called once at worker startup. Idempotent — safe to call multiple times.
+    Called once at worker startup and at the start of each sync job. Idempotent.
 
     Collection configuration:
       - Vector size: matches EMBEDDING_DIMENSIONS (default 384 for BAAI/bge-small-en-v1.5)
@@ -67,14 +112,34 @@ def ensure_collection_exists() -> None:
     collection_name = settings.QDRANT_COLLECTION_NAME
 
     try:
-        client.get_collection(collection_name)
-        logger.info(
-            "Qdrant collection already exists",
-            extra={"collection": collection_name},
+        col_info = client.get_collection(collection_name)
+        current_dim = _get_collection_vector_dimension(col_info)
+        if current_dim == settings.EMBEDDING_DIMENSIONS:
+            logger.info(
+                "Qdrant collection already exists with matching dimensions",
+                extra={"collection": collection_name, "dimensions": current_dim},
+            )
+            return
+
+        logger.warning(
+            "Qdrant collection dimension mismatch (existing: %s, expected: %s). Recreating collection.",
+            current_dim,
+            settings.EMBEDDING_DIMENSIONS,
+            extra={
+                "collection": collection_name,
+                "existing_dim": current_dim,
+                "expected_dim": settings.EMBEDDING_DIMENSIONS,
+            },
         )
-        return
-    except Exception:
-        pass  # Collection doesn't exist yet — create it
+        try:
+            client.delete_collection(collection_name)
+        except Exception as exc:
+            logger.warning("Error deleting outdated collection: %s", exc)
+
+        _reset_db_knowledge_and_files()
+    except Exception as exc:
+        # Collection does not exist yet or connection error to be handled by create
+        logger.debug("Collection check or fetch exception: %s", exc)
 
     client.create_collection(
         collection_name=collection_name,
@@ -151,10 +216,25 @@ def upsert_vectors(points: list[dict[str, Any]]) -> None:
         for p in points
     ]
 
-    client.upsert(
-        collection_name=settings.QDRANT_COLLECTION_NAME,
-        points=qdrant_points,
-    )
+    try:
+        client.upsert(
+            collection_name=settings.QDRANT_COLLECTION_NAME,
+            points=qdrant_points,
+        )
+    except Exception as exc:
+        err_msg = str(exc)
+        if "expected dim" in err_msg or "Wrong input: Vector inserting error" in err_msg:
+            logger.warning(
+                "Dimension mismatch during vector upsert (%s). Recreating collection and retrying.",
+                err_msg,
+            )
+            ensure_collection_exists()
+            client.upsert(
+                collection_name=settings.QDRANT_COLLECTION_NAME,
+                points=qdrant_points,
+            )
+        else:
+            raise
 
     logger.debug(
         "Qdrant vectors upserted",

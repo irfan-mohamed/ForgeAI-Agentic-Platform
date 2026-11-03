@@ -81,6 +81,15 @@ class SyncService:
         clone_dir: str | None = None
 
         try:
+            # ── Ensure Qdrant collection is ready with matching dimensions ────
+            try:
+                vector_store.ensure_collection_exists()
+            except Exception as exc:
+                logger.warning(
+                    "Qdrant collection verification warning",
+                    extra={"sync_id": sync_id, "error": str(exc)},
+                )
+
             # ── Phase 1: Mark sync as RUNNING ─────────────────────────────────
             with get_db_session() as db:
                 sync, repo, installation = self._load_and_start(
@@ -468,8 +477,9 @@ class SyncService:
 
         if (existing_file
                 and existing_file.content_checksum == new_checksum
-                and existing_file.is_indexed):
-            # File unchanged — skip re-embedding
+                and existing_file.is_indexed
+                and existing_file.status == FileStatus.INDEXED.value):
+            # File unchanged and successfully indexed — skip re-embedding
             logger.debug(
                 "File unchanged — skipping re-embed",
                 extra={"file_path": file_path},

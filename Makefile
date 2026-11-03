@@ -76,6 +76,10 @@ test-repo:
 psql:
 	docker compose exec db psql -U forgeai -d forgeai
 
+## ── Reset Qdrant knowledge collection (REST) ─────────────────────────────────
+reset-qdrant:
+	curl -X DELETE "http://localhost:6333/collections/repository_knowledge"
+
 ## ── List Kafka topics ─────────────────────────────────────────────────────────
 kafka-topics:
 	docker compose exec kafka kafka-topics --bootstrap-server localhost:9092 --list
