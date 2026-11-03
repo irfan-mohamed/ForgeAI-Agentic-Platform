@@ -46,8 +46,9 @@ export function OrganizationSetupPage() {
     setLoading(true);
 
     try {
-      await organizationsApi.create({ name, slug, description: description || undefined });
-      navigate('/dashboard');
+      const res = await organizationsApi.create({ name, slug, description: description || undefined });
+      // Redirect straight to repositories page to connect GitHub
+      navigate(`/organizations/${res.data.id}/repositories`);
     } catch (err) {
       const axiosErr = err as AxiosError<ApiError>;
       const detail = axiosErr.response?.data?.detail;
@@ -67,57 +68,57 @@ export function OrganizationSetupPage() {
     <div className="min-h-screen flex items-center justify-center auth-bg p-6">
       <div className="w-full max-w-lg animate-slide-up">
         {/* Header */}
-        <div className="text-center mb-10">
-          <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-forge-600 to-forge-800 flex items-center justify-center mx-auto mb-4 shadow-xl shadow-forge-900/30">
+        <div className="text-center mb-8">
+          <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-forge-500 to-forge-700 flex items-center justify-center mx-auto mb-4 shadow-xl shadow-forge-900/40 border border-white/10">
             <svg className="w-7 h-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
                 d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
             </svg>
           </div>
-          <h1 className="text-2xl font-bold text-gray-900">Set up your organization</h1>
-          <p className="text-gray-500 text-sm mt-2">
-            This is your company's workspace. You can always update it later.
+          <h1 className="text-2xl font-bold text-white tracking-tight">Create your engineering workspace</h1>
+          <p className="text-surface-400 text-xs mt-2">
+            Organizations provide strict tenant isolation for your repositories and AI knowledge.
           </p>
         </div>
 
-        {/* Form */}
-        <div className="glass-card p-8">
-          <form onSubmit={handleSubmit} className="flex flex-col gap-6">
+        {/* Form Card */}
+        <div className="glass-card p-8 border border-white/10">
+          <form onSubmit={handleSubmit} className="flex flex-col gap-5">
             <Input
-              label="Organization name"
+              label="Organization Name"
               id="org-name"
               type="text"
-              placeholder="Acme Corporation"
+              placeholder="e.g. Acme Engineering"
               value={name}
               onChange={(e) => handleNameChange(e.target.value)}
               required
-              hint="The name of your company or team."
+              hint="The name of your engineering department, startup, or team."
             />
 
             <div>
               <Input
-                label="URL slug"
+                label="Workspace Slug"
                 id="org-slug"
                 type="text"
-                placeholder="acme-corporation"
+                placeholder="acme-engineering"
                 value={slug}
                 onChange={(e) => handleSlugChange(e.target.value)}
                 required
-                hint="Used in API paths. Lowercase letters, numbers, and hyphens only."
-                  leftIcon={
-                  <span className="text-gray-400 text-xs font-mono">forge/</span>
+                hint="Unique URL identifier. Lowercase letters, numbers, and hyphens."
+                leftIcon={
+                  <span className="text-surface-500 text-xs font-mono">forge/</span>
                 }
               />
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <label htmlFor="org-description" className="text-sm font-medium text-gray-700">
-                Description <span className="text-gray-400 font-normal">(optional)</span>
+              <label htmlFor="org-description" className="text-xs font-medium text-surface-300">
+                Description <span className="text-surface-500 font-normal">(optional)</span>
               </label>
               <textarea
                 id="org-description"
                 rows={3}
-                placeholder="What does your organization do?"
+                placeholder="What software does this workspace build and maintain?"
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
                 className="input-base resize-none"
@@ -125,7 +126,7 @@ export function OrganizationSetupPage() {
             </div>
 
             {error && (
-              <div className="flex items-center gap-2 px-4 py-3 bg-red-50 border border-red-200 rounded-xl text-red-600 text-sm">
+              <div className="flex items-center gap-2 px-4 py-3 bg-red-500/10 border border-red-500/30 rounded-xl text-red-300 text-xs">
                 <svg className="w-4 h-4 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
                   <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
                 </svg>
@@ -133,14 +134,14 @@ export function OrganizationSetupPage() {
               </div>
             )}
 
-            <Button type="submit" variant="primary" size="lg" isLoading={loading}>
-              Create organization
+            <Button type="submit" variant="primary" size="lg" isLoading={loading} className="mt-2">
+              Create Workspace & Continue
             </Button>
           </form>
         </div>
 
-        <p className="text-center text-sm text-gray-400 mt-6">
-          You'll automatically become the Company Admin of this organization.
+        <p className="text-center text-xs text-surface-500 mt-6">
+          You will automatically become the initial workspace owner.
         </p>
       </div>
     </div>

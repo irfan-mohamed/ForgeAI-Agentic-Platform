@@ -3,12 +3,19 @@ import { AuthProvider, useAuth } from '@/context/AuthContext';
 import { PageSpinner } from '@/components/ui/Spinner';
 
 // Pages
+import { LandingPage } from '@/pages/landing/LandingPage';
 import { LoginPage } from '@/pages/auth/LoginPage';
 import { RegisterPage } from '@/pages/auth/RegisterPage';
 import { OrganizationSetupPage } from '@/pages/setup/OrganizationSetupPage';
 import { DashboardPage } from '@/pages/dashboard/DashboardPage';
 import { RepositoriesPage } from '@/pages/repositories/RepositoriesPage';
 import { GitHubCallbackPage } from '@/pages/github/GitHubCallbackPage';
+import { AIWorkspacePage } from '@/pages/ai/AIWorkspacePage';
+import { CodeReviewsPage } from '@/pages/reviews/CodeReviewsPage';
+import { CodeReviewDetailPage } from '@/pages/reviews/CodeReviewDetailPage';
+import { TestAssistancePage } from '@/pages/tests/TestAssistancePage';
+import { FeaturePlansPage } from '@/pages/plans/FeaturePlansPage';
+import { MembersPage } from '@/pages/members/MembersPage';
 import { NotFoundPage } from '@/pages/NotFoundPage';
 
 // ── Route guards ──────────────────────────────────────────────────────────────
@@ -27,28 +34,54 @@ function PublicRoute({ children }: { children: React.ReactNode }) {
   return isAuthenticated ? <Navigate to="/dashboard" replace /> : <>{children}</>;
 }
 
-// ── App ───────────────────────────────────────────────────────────────────────
+// ── App Routes ────────────────────────────────────────────────────────────────
 
 function AppRoutes() {
   return (
     <Routes>
-      {/* Public routes */}
+      {/* Public Landing & Auth */}
+      <Route path="/" element={<LandingPage />} />
       <Route path="/login" element={<PublicRoute><LoginPage /></PublicRoute>} />
       <Route path="/register" element={<PublicRoute><RegisterPage /></PublicRoute>} />
 
-      {/* Protected routes */}
+      {/* Organization Setup & Dashboard */}
       <Route path="/setup" element={<PrivateRoute><OrganizationSetupPage /></PrivateRoute>} />
       <Route path="/dashboard" element={<PrivateRoute><DashboardPage /></PrivateRoute>} />
+
+      {/* Organization-Scoped Platform Workspaces */}
       <Route
         path="/organizations/:orgId/repositories"
         element={<PrivateRoute><RepositoriesPage /></PrivateRoute>}
       />
+      <Route
+        path="/organizations/:orgId/ai"
+        element={<PrivateRoute><AIWorkspacePage /></PrivateRoute>}
+      />
+      <Route
+        path="/organizations/:orgId/reviews"
+        element={<PrivateRoute><CodeReviewsPage /></PrivateRoute>}
+      />
+      <Route
+        path="/organizations/:orgId/reviews/:reviewId"
+        element={<PrivateRoute><CodeReviewDetailPage /></PrivateRoute>}
+      />
+      <Route
+        path="/organizations/:orgId/tests"
+        element={<PrivateRoute><TestAssistancePage /></PrivateRoute>}
+      />
+      <Route
+        path="/organizations/:orgId/plans"
+        element={<PrivateRoute><FeaturePlansPage /></PrivateRoute>}
+      />
+      <Route
+        path="/organizations/:orgId/members"
+        element={<PrivateRoute><MembersPage /></PrivateRoute>}
+      />
 
-      {/* GitHub callback — no auth guard needed, the service validates the state token */}
+      {/* GitHub callback */}
       <Route path="/github/callback" element={<GitHubCallbackPage />} />
 
-      {/* Redirects */}
-      <Route path="/" element={<Navigate to="/dashboard" replace />} />
+      {/* Fallback 404 */}
       <Route path="*" element={<NotFoundPage />} />
     </Routes>
   );

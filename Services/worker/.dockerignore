@@ -1,0 +1,24 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+.env
+*.pem
+*.key
+
+.git
+.gitignore
+
+# Test artifacts
+.pytest_cache/
+htmlcov/
+.coverage
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+
+# Clone workspace (populated at runtime, never in image)
+/tmp/

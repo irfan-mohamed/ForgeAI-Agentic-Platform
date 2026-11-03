@@ -18,19 +18,19 @@ function StrengthBar({ password }: { password: string }) {
   if (!password) return null;
 
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className="flex flex-col gap-1.5 mt-1">
       <div className="flex gap-1">
         {[1, 2, 3, 4].map((i) => (
           <div
             key={i}
             className={`h-1 flex-1 rounded-full transition-all duration-300 ${
-              i <= score ? colors[score] : 'bg-gray-200'
+              i <= score ? colors[score] : 'bg-surface-700'
             }`}
           />
         ))}
       </div>
       {score > 0 && (
-        <p className={`text-xs ${score < 2 ? 'text-red-400' : score < 3 ? 'text-amber-400' : score < 4 ? 'text-blue-400' : 'text-emerald-400'}`}>
+        <p className={`text-[11px] ${score < 2 ? 'text-red-400' : score < 3 ? 'text-amber-400' : score < 4 ? 'text-blue-400' : 'text-emerald-400'}`}>
           Password strength: {labels[score]}
         </p>
       )}
@@ -72,48 +72,50 @@ export function RegisterPage() {
   return (
     <div className="min-h-screen flex auth-bg">
       {/* ── Left panel ──────────────────────────────────────────── */}
-      <div className="hidden lg:flex flex-col justify-between w-[52%] p-12 relative overflow-hidden bg-gradient-to-br from-forge-900 via-surface-800 to-forge-950">
-        <div className="absolute inset-0 bg-grid-pattern opacity-30" />
-        <div className="absolute top-1/3 left-1/3 w-80 h-80 bg-forge-500/20 rounded-full blur-3xl pointer-events-none" />
+      <div className="hidden lg:flex flex-col justify-between w-[50%] p-12 relative overflow-hidden bg-surface-900 border-r border-white/8">
+        <div className="absolute inset-0 bg-grid-pattern opacity-25" />
+        <div className="absolute top-1/3 left-1/3 w-80 h-80 bg-forge-600/15 rounded-full blur-3xl pointer-events-none" />
 
         {/* Logo */}
         <div className="relative flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-forge-500 to-forge-700 flex items-center justify-center shadow-lg shadow-forge-900/50">
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-forge-500 to-forge-700 flex items-center justify-center shadow-lg shadow-forge-900/50 border border-white/10">
             <svg className="w-5 h-5 text-white" viewBox="0 0 24 24" fill="currentColor">
               <path d="M13 10V3L4 14h7v7l9-11h-7z" />
             </svg>
           </div>
-          <span className="font-bold text-white text-lg tracking-wide">FlowForge</span>
+          <span className="font-bold text-white text-lg tracking-wide">
+            Forge<span className="text-forge-400">AI</span>
+          </span>
         </div>
 
         {/* Steps preview */}
-        <div className="relative">
-          <h2 className="text-3xl font-bold text-white leading-tight mb-6">
-            Get started in<br />
-            <span className="text-gradient">three simple steps.</span>
+        <div className="relative space-y-6">
+          <h2 className="text-3xl font-extrabold text-white leading-tight">
+            Connect your software<br />
+            <span className="text-gradient">in three easy steps.</span>
           </h2>
 
-          <div className="flex flex-col gap-6">
+          <div className="flex flex-col gap-5 pt-2">
             {[
-              { step: '01', title: 'Create your account', desc: 'Sign up with your work email address.' },
-              { step: '02', title: 'Set up your organization', desc: 'Name your company and invite your team.' },
-              { step: '03', title: 'Start onboarding', desc: 'Upload documents, create templates, and launch.' },
+              { step: '01', title: 'Create Engineer Account', desc: 'Register with your developer work email.' },
+              { step: '02', title: 'Set Up Organization Workspace', desc: 'Establish an isolated tenant workspace for your repositories.' },
+              { step: '03', title: 'Authorize GitHub App & Sync', desc: 'Select repositories to index and interact with the AI Engineering Agent.' },
             ].map((s) => (
               <div key={s.step} className="flex items-start gap-4">
-                <div className="w-9 h-9 rounded-xl bg-white/10 border border-white/20 flex items-center justify-center text-forge-300 text-xs font-bold flex-shrink-0">
+                <div className="w-9 h-9 rounded-xl bg-surface-800 border border-white/10 flex items-center justify-center text-forge-300 text-xs font-mono font-bold flex-shrink-0">
                   {s.step}
                 </div>
                 <div>
                   <p className="text-white font-semibold text-sm">{s.title}</p>
-                  <p className="text-surface-400 text-sm">{s.desc}</p>
+                  <p className="text-surface-400 text-xs mt-0.5">{s.desc}</p>
                 </div>
               </div>
             ))}
           </div>
         </div>
 
-        <div className="relative text-white/30 text-xs">
-          FlowForge — AI-Powered Employee Onboarding
+        <div className="relative text-surface-500 text-xs font-mono">
+          ForgeAI Platform — Multi-Tenant Architecture & Granular Security
         </div>
       </div>
 
@@ -121,9 +123,9 @@ export function RegisterPage() {
       <div className="flex-1 flex items-center justify-center p-6 lg:p-12">
         <div className="w-full max-w-md animate-slide-up">
           <div className="mb-8">
-            <h2 className="text-2xl font-bold text-gray-900">Create your account</h2>
-            <p className="text-gray-500 mt-1 text-sm">
-              Start your FlowForge journey today
+            <h2 className="text-2xl font-bold text-white tracking-tight">Create your account</h2>
+            <p className="text-surface-400 mt-1 text-sm">
+              Get started with ForgeAI and empower your engineering team
             </p>
           </div>
 
@@ -132,7 +134,7 @@ export function RegisterPage() {
               label="Full name"
               id="register-name"
               type="text"
-              placeholder="Jane Smith"
+              placeholder="Alex Smith"
               value={name}
               onChange={(e) => setName(e.target.value)}
               autoComplete="name"
@@ -148,7 +150,7 @@ export function RegisterPage() {
               label="Work email"
               id="register-email"
               type="email"
-              placeholder="jane@company.com"
+              placeholder="engineer@company.com"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               autoComplete="email"
@@ -160,7 +162,7 @@ export function RegisterPage() {
               }
             />
 
-            <div className="flex flex-col gap-2">
+            <div className="flex flex-col gap-1.5">
               <PasswordInput
                 label="Password"
                 id="register-password"
@@ -175,7 +177,7 @@ export function RegisterPage() {
             </div>
 
             {error && (
-              <div className="flex items-center gap-2 px-4 py-3 bg-red-50 border border-red-200 rounded-xl text-red-600 text-sm">
+              <div className="flex items-center gap-2 px-4 py-3 bg-red-500/10 border border-red-500/30 rounded-xl text-red-300 text-xs">
                 <svg className="w-4 h-4 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
                   <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
                 </svg>
@@ -183,20 +185,22 @@ export function RegisterPage() {
               </div>
             )}
 
-            <Button type="submit" variant="primary" size="lg" isLoading={loading} className="mt-1">
-              Create account
+            <Button type="submit" variant="primary" size="lg" isLoading={loading} className="mt-2">
+              Create Developer Account
             </Button>
           </form>
 
-          <p className="text-center text-sm text-gray-500 mt-6">
+          <p className="text-center text-xs text-surface-400 mt-6">
             Already have an account?{' '}
-            <Link to="/login" className="text-forge-600 hover:text-forge-700 font-medium transition-colors">
+            <Link to="/login" className="text-forge-400 hover:text-forge-300 font-semibold transition-colors">
               Sign in
             </Link>
           </p>
 
-          <p className="text-center text-xs text-gray-400 mt-4">
-            By creating an account you agree to our Terms of Service and Privacy Policy.
+          <p className="text-center text-xs text-surface-600 mt-4">
+            <Link to="/" className="hover:text-surface-400 transition-colors">
+              ← Back to homepage
+            </Link>
           </p>
         </div>
       </div>

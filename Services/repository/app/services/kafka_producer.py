@@ -53,15 +53,44 @@ def _emit(topic: str, payload: dict) -> None:
         return
 
     # ── Real Kafka publish ────────────────────────────────────────────────────
-    # Uncomment and complete when Worker service is ready.
-    # from aiokafka import AIOKafkaProducer
-    # ...
-    # This will be implemented in Phase 2 (Worker service sprint).
-    logger.warning(
-        "KAFKA_ENABLED=true but real producer is not yet implemented. "
-        "Event dropped.",
-        extra={"kafka_topic": topic, "payload": payload},
-    )
+    # Uses a synchronous Kafka producer so we don't need async context here.
+    # The repository service routes are sync (FastAPI default), so we use
+    # a fresh producer per publish call. For high-throughput production use,
+    # replace with a persistent producer managed in lifespan.
+    try:
+        from kafka import KafkaProducer
+        import json as _json
+
+        producer = KafkaProducer(
+            bootstrap_servers=settings.KAFKA_BOOTSTRAP_SERVERS.split(","),
+            value_serializer=lambda v: _json.dumps(v).encode("utf-8"),
+            acks="all",                 # Wait for all replicas to acknowledge
+            retries=3,
+            request_timeout_ms=10000,
+        )
+        future = producer.send(topic, value=payload)
+        future.get(timeout=10)          # Block until broker acknowledges
+        producer.flush()
+        producer.close()
+
+        logger.info(
+            "Kafka event published",
+            extra={
+                "kafka_topic": topic,
+                "kafka_event": payload.get("event"),
+                "organization_id": payload.get("organization_id"),
+                "repository_id": payload.get("repository_id"),
+            },
+        )
+    except Exception as exc:
+        logger.error(
+            "Failed to publish Kafka event — event dropped",
+            extra={
+                "kafka_topic": topic,
+                "kafka_event": payload.get("event"),
+                "error": str(exc),
+            },
+        )
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
