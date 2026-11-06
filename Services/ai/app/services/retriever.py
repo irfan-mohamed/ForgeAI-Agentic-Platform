@@ -34,11 +34,10 @@ _embed_model = None  # fastembed TextEmbedding singleton
 def _qdrant() -> QdrantClient:
     global _qdrant_client
     if _qdrant_client is None:
-        _qdrant_client = QdrantClient(
-            url=settings.QDRANT_URL,
-            api_key=settings.QDRANT_API_KEY or None,
-            check_compatibility=False,
-        )
+        kwargs: dict = {"url": settings.QDRANT_URL}
+        if settings.QDRANT_API_KEY:
+            kwargs["api_key"] = settings.QDRANT_API_KEY
+        _qdrant_client = QdrantClient(**kwargs)
     return _qdrant_client
 
 

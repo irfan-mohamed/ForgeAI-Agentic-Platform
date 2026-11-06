@@ -116,6 +116,191 @@ class TestConnectRepository:
         assert response.status_code == 401
 
 
+# ── Reconnect Repository ──────────────────────────────────────────────────────
+
+class TestReconnectRepository:
+
+    def test_reconnect_disconnected_repository_success(self, client, db):
+        """Reconnecting a previously disconnected repository reactivates it instead of failing."""
+        seed_membership(db, USER_ID, ORG_ID)
+        install = seed_installation(db, org_id=ORG_ID)
+
+        # 1. First connection
+        with _mock_github_services():
+            res1 = client.post(
+                f"/api/v1/organizations/{ORG_ID}/repositories",
+                json={"github_repository_id": "123456"},
+                headers=auth_headers(USER_ID),
+            )
+        assert res1.status_code == 201
+        repo_id = res1.json()["id"]
+
+        # 2. Disconnect
+        res_del = client.delete(
+            f"/api/v1/repositories/{repo_id}",
+            headers=auth_headers(USER_ID),
+        )
+        assert res_del.status_code == 204
+
+        # Verify it is disconnected in DB
+        from app.models.repository import Repository, RepositoryStatus
+        repo_in_db = db.get(Repository, repo_id)
+        assert repo_in_db.status == RepositoryStatus.DISCONNECTED.value
+
+        # 3. Reconnect the same repository
+        with _mock_github_services():
+            res2 = client.post(
+                f"/api/v1/organizations/{ORG_ID}/repositories",
+                json={"github_repository_id": "123456"},
+                headers=auth_headers(USER_ID),
+            )
+        assert res2.status_code == 201
+        data = res2.json()
+        assert data["id"] == repo_id, "Must reactivate the existing repository record"
+        assert data["status"] == "connecting"
+
+        # Verify database has exactly 1 repository record for this repo
+        all_repos = (
+            db.query(Repository)
+            .filter(
+                Repository.organization_id == ORG_ID,
+                Repository.github_repository_id == "123456",
+            )
+            .all()
+        )
+        assert len(all_repos) == 1, "Must not create duplicate repository records"
+
+    def test_reconnect_with_different_installation(self, client, db):
+        """Reconnecting through a different/new GitHub installation updates the installation ID."""
+        seed_membership(db, USER_ID, ORG_ID)
+        install1 = seed_installation(db, org_id=ORG_ID, github_installation_id=1111)
+
+        # 1. Connect
+        with _mock_github_services():
+            res1 = client.post(
+                f"/api/v1/organizations/{ORG_ID}/repositories",
+                json={"github_repository_id": "123456"},
+                headers=auth_headers(USER_ID),
+            )
+        assert res1.status_code == 201
+        repo_id = res1.json()["id"]
+
+        # 2. Disconnect
+        client.delete(f"/api/v1/repositories/{repo_id}", headers=auth_headers(USER_ID))
+
+        # 3. Revoke install1 and seed active install2
+        from app.models.github_installation import GitHubInstallation, InstallationStatus
+        inst1_record = db.get(GitHubInstallation, install1.id)
+        inst1_record.status = InstallationStatus.REVOKED.value
+        db.commit()
+
+        install2 = seed_installation(db, org_id=ORG_ID, github_installation_id=2222)
+
+        # 4. Reconnect
+        with _mock_github_services():
+            res2 = client.post(
+                f"/api/v1/organizations/{ORG_ID}/repositories",
+                json={"github_repository_id": "123456"},
+                headers=auth_headers(USER_ID),
+            )
+        assert res2.status_code == 201
+        from app.models.repository import Repository
+        repo_in_db = db.get(Repository, repo_id)
+        assert repo_in_db.github_installation_id == install2.id, "GitHub installation ID must be updated"
+
+    def test_reconnect_preserves_historical_records_and_avoids_duplicate_syncs(self, client, db):
+        """Historical sync records are preserved and no duplicate queued sync records are created."""
+        from app.models.repository import Repository, RepositoryStatus
+        from app.models.repository_sync import RepositorySync, SyncStatus
+
+        seed_membership(db, USER_ID, ORG_ID)
+        install = seed_installation(db, org_id=ORG_ID)
+
+        # 1. First connection
+        with _mock_github_services():
+            res1 = client.post(
+                f"/api/v1/organizations/{ORG_ID}/repositories",
+                json={"github_repository_id": "123456"},
+                headers=auth_headers(USER_ID),
+            )
+        repo_id = res1.json()["id"]
+
+        # Simulate first sync completed
+        sync1 = db.query(RepositorySync).filter(RepositorySync.repository_id == repo_id).first()
+        sync1.status = SyncStatus.COMPLETED.value
+        repo = db.get(Repository, repo_id)
+        repo.status = RepositoryStatus.READY.value
+        db.commit()
+
+        # 2. Disconnect
+        client.delete(f"/api/v1/repositories/{repo_id}", headers=auth_headers(USER_ID))
+
+        # 3. Reconnect
+        with _mock_github_services():
+            res2 = client.post(
+                f"/api/v1/organizations/{ORG_ID}/repositories",
+                json={"github_repository_id": "123456"},
+                headers=auth_headers(USER_ID),
+            )
+        assert res2.status_code == 201
+
+        # 4. Verify sync records
+        all_syncs = (
+            db.query(RepositorySync)
+            .filter(RepositorySync.repository_id == repo_id)
+            .order_by(RepositorySync.id.asc())
+            .all()
+        )
+        assert len(all_syncs) == 2, f"Expected 2 sync records (1 historical, 1 new), got {len(all_syncs)}"
+        assert all_syncs[0].status == SyncStatus.COMPLETED.value, "Historical completed sync must be preserved"
+        assert all_syncs[1].status == SyncStatus.QUEUED.value, "New sync must be queued"
+
+    def test_concurrent_connections_handled(self):
+        """Concurrent connection requests are serialized and only one succeeds while other raises 409."""
+        import threading
+        from app.services.repository_service import RepositoryService
+        from fastapi import HTTPException
+        from app.models.repository import Repository
+        from tests.conftest import TestSessionLocal
+
+        init_session = TestSessionLocal()
+        seed_membership(init_session, USER_ID, ORG_ID)
+        seed_installation(init_session, org_id=ORG_ID)
+        init_session.close()
+
+        results = []
+        def attempt_connect(t_id):
+            session = TestSessionLocal()
+            try:
+                with _mock_github_services():
+                    r = RepositoryService.connect_repository(ORG_ID, "concurrent-repo-test", session)
+                    results.append(("success", t_id, r.id))
+            except HTTPException as exc:
+                results.append(("conflict", t_id, exc.status_code))
+            except Exception as exc:
+                results.append(("error", t_id, str(exc)))
+            finally:
+                session.close()
+
+        threads = [threading.Thread(target=attempt_connect, args=(i,)) for i in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        successes = [r for r in results if r[0] == "success"]
+        conflicts = [r for r in results if r[0] == "conflict"]
+        assert len(successes) == 1, f"Expected exactly 1 success, got results: {results}"
+        assert len(conflicts) == 1, f"Expected exactly 1 conflict, got results: {results}"
+        assert conflicts[0][2] == 409
+
+        # Ensure database row count is 1
+        verify_session = TestSessionLocal()
+        count = verify_session.query(Repository).filter(Repository.github_repository_id == "concurrent-repo-test").count()
+        verify_session.close()
+        assert count == 1
+
+
 # ── List Repositories ─────────────────────────────────────────────────────────
 
 class TestListRepositories:

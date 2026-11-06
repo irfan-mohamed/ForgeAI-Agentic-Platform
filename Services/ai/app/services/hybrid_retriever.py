@@ -60,6 +60,10 @@ class HybridResult:
     symbol_type: str | None = None
     signature: str | None = None
 
+    @property
+    def score(self) -> float:
+        return self.rrf_score
+
 
 # ── RRF implementation ────────────────────────────────────────────────────────
 

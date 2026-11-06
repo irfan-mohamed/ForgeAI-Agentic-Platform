@@ -41,12 +41,23 @@ logger = logging.getLogger(__name__)
 _TIMEOUT = httpx.Timeout(30.0)
 
 
+def _make_service_token() -> str:
+    from datetime import datetime, timezone, timedelta
+    from jose import jwt
+    payload = {
+        "sub": "service:ai",
+        "exp": datetime.now(timezone.utc) + timedelta(minutes=5),
+    }
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm="HS256")
+
+
 def _repo_get(path: str, params: dict | None = None) -> Any:
     """Synchronous GET against the repository service internal API."""
     url = f"{settings.REPOSITORY_SERVICE_URL}/api/v1{path}"
+    headers = {"Authorization": f"Bearer {_make_service_token()}"}
     try:
         with httpx.Client(timeout=_TIMEOUT) as client:
-            resp = client.get(url, params=params)
+            resp = client.get(url, params=params, headers=headers)
             resp.raise_for_status()
             return resp.json()
     except httpx.HTTPStatusError as e:
@@ -315,7 +326,7 @@ def semantic_search(
             "end_line": r.end_line,
             "language": r.language,
             "content": r.content[:2000],  # Cap per-chunk content for state size
-            "score": r.score,
+            "score": getattr(r, "score", getattr(r, "rrf_score", 0.0)),
         }
         for r in results
     ]

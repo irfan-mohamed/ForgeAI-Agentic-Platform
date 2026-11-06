@@ -38,10 +38,14 @@ def get_current_user_id(
     Decodes the HS256 JWT issued by the api service.
 
     Returns the user_id (int) extracted from the 'sub' claim.
+    For internal peer services authenticated via shared SECRET_KEY (sub starts with 'service:'),
+    returns 0 as the service identity.
     Raises HTTP 401 if the token is invalid or expired.
     """
     try:
         user_id_str = decode_access_token(token)
+        if isinstance(user_id_str, str) and user_id_str.startswith("service:"):
+            return 0
         return int(user_id_str)
     except (ValueError, TypeError):
         logger.warning("Token validation failed")
@@ -60,7 +64,11 @@ def _check_membership(user_id: int, org_id: int, db: Session) -> None:
     the user is an active member of the organization.
 
     Raises HTTP 403 if the user is not a member.
+    Internal service identity (user_id == 0) bypasses individual user membership.
     """
+    if user_id == 0:
+        return
+
     # Raw SQL query to avoid importing api service models into this service.
     result = db.execute(
         text(

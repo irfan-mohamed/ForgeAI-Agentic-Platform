@@ -550,6 +550,18 @@ class SyncService:
                 f"Embedding count mismatch: got {len(embeddings)}, expected {len(chunks)}"
             )
 
+        logger.info(
+            "Embeddings generated for file chunks",
+            extra={
+                "org_id": db_organization_id,
+                "repo_id": repository_id,
+                "file_path": file_path,
+                "chunks_count": len(chunks),
+                "embeddings_count": len(embeddings),
+                "embedding_model": embedder.get_model_name(),
+            },
+        )
+
         # ── Step 9: Upsert vectors + create knowledge records ─────────────────
         vector_points: list[dict] = []
         knowledge_records: list[RepositoryKnowledge] = []
@@ -598,6 +610,17 @@ class SyncService:
 
         # Upsert vectors into Qdrant
         vector_store.upsert_vectors(vector_points)
+
+        logger.info(
+            "Qdrant points inserted for file",
+            extra={
+                "org_id": db_organization_id,
+                "repo_id": repository_id,
+                "file_path": file_path,
+                "points_inserted": len(vector_points),
+                "collection": settings.QDRANT_COLLECTION_NAME,
+            },
+        )
 
         # Save knowledge metadata into PostgreSQL
         with get_db_session() as db:

@@ -578,6 +578,36 @@ def _hard_split(
 
     for i, line in enumerate(lines):
         lt = _count_tokens(line)
+        if lt > max_tokens:
+            # Single line exceeds max_tokens — flush current and slice the line
+            if current:
+                chunks.append(CodeChunk(
+                    content="".join(current),
+                    chunk_type="block",
+                    chunk_name=None,
+                    chunk_index=idx,
+                    start_line=chunk_start,
+                    end_line=start_line + i - 1,
+                ))
+                idx += 1
+                current = []
+                current_tokens = 0
+
+            char_step = max(max_tokens * 3, 100)
+            for c_start in range(0, len(line), char_step):
+                segment = line[c_start:c_start + char_step]
+                chunks.append(CodeChunk(
+                    content=segment,
+                    chunk_type="block",
+                    chunk_name=None,
+                    chunk_index=idx,
+                    start_line=start_line + i,
+                    end_line=start_line + i,
+                ))
+                idx += 1
+            chunk_start = start_line + i + 1
+            continue
+
         if current_tokens + lt > max_tokens and current:
             chunks.append(CodeChunk(
                 content="".join(current),

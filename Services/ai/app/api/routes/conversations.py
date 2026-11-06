@@ -22,9 +22,12 @@ from app.core.access import (
     parse_id,
     require_org_member,
 )
+from app.core.logging import get_logger
 from app.core.security import UserId
 from app.db.database import get_db
 from app.models.conversation import Conversation
+
+logger = get_logger(__name__)
 
 router = APIRouter()
 
@@ -90,7 +93,12 @@ def create_conversation(
     """Create a new conversation tied to a repository of the organization."""
     org = parse_id(org_id, "organization id")
     require_org_member(db, user_id, org)
-    repo = get_repository(db, org, parse_id(body.repository_id, "repository id"))
+    repo = get_repository(db, org, parse_id(body.repository_id, "repository id"), require_ready=True)
+
+    logger.info(
+        "Repository eligibility verified for conversation",
+        extra={"org_id": org, "repo_id": repo.id, "repo_status": repo.status, "user_id": user_id},
+    )
 
     conv = Conversation(
         org_id=str(org),
@@ -136,6 +144,10 @@ def list_conversations(
         .offset((page - 1) * limit)
         .limit(limit)
         .all()
+    )
+    logger.info(
+        "Listing conversations for organization",
+        extra={"org_id": org, "user_id": user_id, "total_found": total, "returned": len(convs)},
     )
     return {"conversations": convs, "total": total}
 

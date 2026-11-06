@@ -51,12 +51,14 @@ interface NewConvModalProps {
 }
 
 function NewConvModal({ repos, onClose, onCreated, orgId }: NewConvModalProps) {
-  const [repoId, setRepoId] = useState('');
+  const readyRepos = repos.filter(r => r.status?.toLowerCase() === 'ready');
+  const inProgressRepos = repos.filter(r => ['indexing', 'syncing', 'connecting'].includes(r.status?.toLowerCase()));
+  const failedRepos = repos.filter(r => r.status?.toLowerCase() === 'failed');
+
+  const [repoId, setRepoId] = useState(readyRepos.length === 1 ? String(readyRepos[0].id) : '');
   const [title, setTitle] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-
-  const readyRepos = repos.filter(r => r.status === 'ready');
 
   async function handleCreate() {
     if (!repoId || !title.trim()) {
@@ -89,9 +91,31 @@ function NewConvModal({ repos, onClose, onCreated, orgId }: NewConvModalProps) {
               Select Repository <span className="text-red-400">*</span>
             </label>
             {readyRepos.length === 0 ? (
-              <p className="text-xs text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-xl px-3 py-2.5">
-                No indexed repositories found. Please connect and sync a repository first.
-              </p>
+              <div className="text-xs text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-xl p-3 space-y-2">
+                {failedRepos.length > 0 ? (
+                  <>
+                    <p className="font-semibold text-amber-200">
+                      Repository '{failedRepos[0].full_name}' status is currently '{failedRepos[0].status}'.
+                    </p>
+                    <p className="text-surface-300">
+                      The AI service requires the repository status to be <code className="text-emerald-300">ready</code> before chatting. Please go to the <strong>Repositories</strong> tab and click <strong>Sync</strong> (or run the quick SQL fix) to finalize indexing.
+                    </p>
+                  </>
+                ) : inProgressRepos.length > 0 ? (
+                  <>
+                    <p className="font-semibold text-amber-200">
+                      Repository '{inProgressRepos[0].full_name}' is currently {inProgressRepos[0].status}…
+                    </p>
+                    <p className="text-surface-300">
+                      Please wait a moment for the background worker to finish indexing all files.
+                    </p>
+                  </>
+                ) : (
+                  <p>
+                    No indexed repositories found. Please connect and sync a repository first.
+                  </p>
+                )}
+              </div>
             ) : (
               <select
                 value={repoId}
@@ -211,22 +235,31 @@ export function AIWorkspacePage() {
   const streamCtrlRef  = useRef<AbortController | null>(null);
   const textareaRef    = useRef<HTMLTextAreaElement>(null);
 
-  // Load conversations + repos
+  // Load conversations + repos (resilient: one failure does not block the other)
   useEffect(() => {
     if (!orgId) return;
     setLoadingConvs(true);
-    Promise.all([
+    Promise.allSettled([
       aiApi.listConversations(orgId),
       repositoryApi.listRepos(orgId),
     ])
-      .then(([convRes, repoRes]) => {
-        setConversations(convRes.data.conversations || []);
-        setRepos(repoRes.data.repositories || []);
-        if (convRes.data.conversations?.length > 0) {
-          setActiveConv(prev => prev ?? convRes.data.conversations[0]);
+      .then(([convResult, repoResult]) => {
+        if (convResult.status === 'fulfilled') {
+          const convList = convResult.value.data.conversations || [];
+          setConversations(convList);
+          if (convList.length > 0) {
+            setActiveConv(prev => prev ?? convList[0]);
+          }
+        } else {
+          console.error('Failed to load conversations', convResult.reason);
+        }
+
+        if (repoResult.status === 'fulfilled') {
+          setRepos(repoResult.value.data.repositories || []);
+        } else {
+          console.error('Failed to load repositories', repoResult.reason);
         }
       })
-      .catch(console.error)
       .finally(() => setLoadingConvs(false));
   }, [orgId]);
 

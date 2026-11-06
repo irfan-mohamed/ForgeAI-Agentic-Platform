@@ -15,6 +15,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 
 from app.api.router import api_router
 from app.core.config import settings
@@ -41,6 +42,16 @@ async def lifespan(application: FastAPI):
     )
     # Create AI service owned tables if they don't exist
     Base.metadata.create_all(bind=engine)
+
+    # Ensure schema migrations for existing tables (idempotent)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "ALTER TABLE conversations "
+                "ADD COLUMN IF NOT EXISTS repository_full_name VARCHAR(512);"
+            )
+        )
+
     logger.info(
         "Database tables ready",
         extra={

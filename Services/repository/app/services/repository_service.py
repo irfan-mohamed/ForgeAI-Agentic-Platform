@@ -14,6 +14,7 @@ import logging
 from datetime import datetime, timezone
 
 from fastapi import HTTPException, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.github_installation import GitHubInstallation, InstallationStatus
@@ -180,12 +181,18 @@ class RepositoryService:
         Connects a GitHub repository to a ForgeAI organization.
 
         Steps:
-        1. Validates the org has a GitHub installation.
-        2. Checks the repo is not already connected in this org.
-        3. Fetches repository metadata from GitHub.
-        4. Creates the Repository record (status=CONNECTING).
-        5. Creates the first RepositorySync record (trigger=initial).
-        6. Publishes repository.connected Kafka event.
+        1. Validates the org has an active GitHub installation.
+        2. Checks if the repository already exists for this organization:
+           - If found and currently active (not DISCONNECTED or ACCESS_REVOKED),
+             raises 409 Conflict.
+           - If found and DISCONNECTED (or ACCESS_REVOKED), reactivates and updates
+             the existing record instead of inserting a duplicate.
+           - If not found, creates a new Repository record.
+        3. Fetches fresh repository metadata from GitHub.
+        4. Updates or creates the Repository record (status=CONNECTING).
+        5. Updates github_installation_id to the current active installation.
+        6. Ensures an initial RepositorySync record is queued (avoiding duplicates).
+        7. Publishes repository.connected Kafka event.
 
         Raises:
             404 — No GitHub installation for the org
@@ -194,17 +201,22 @@ class RepositoryService:
         """
         installation = RepositoryService.get_installation_or_404(organization_id, db)
 
-        # Check for duplicate connection.
+        # 1. Check for existing repository record (including soft-disconnected and revoked)
         existing = (
             db.query(Repository)
             .filter(
                 Repository.organization_id == organization_id,
                 Repository.github_repository_id == github_repository_id,
-                Repository.status != RepositoryStatus.DISCONNECTED.value,
             )
+            .with_for_update()
             .first()
         )
-        if existing:
+
+        # 2. If already connected and not disconnected/revoked, reject duplicate
+        if existing and existing.status not in (
+            RepositoryStatus.DISCONNECTED.value,
+            RepositoryStatus.ACCESS_REVOKED.value,
+        ):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=(
@@ -213,7 +225,7 @@ class RepositoryService:
                 ),
             )
 
-        # Fetch real repo metadata from GitHub.
+        # 3. Fetch real repo metadata from GitHub.
         try:
             token = github_service.get_installation_access_token(
                 installation.github_installation_id
@@ -229,34 +241,96 @@ class RepositoryService:
                 detail="Failed to fetch repository information from GitHub.",
             )
 
-        # Create Repository record.
-        repo = Repository(
-            organization_id=organization_id,
-            github_installation_id=installation.id,
-            github_repository_id=github_repository_id,
-            name=meta["name"],
-            full_name=meta["full_name"],
-            owner=meta["owner"]["login"],
-            description=meta.get("description"),
-            visibility="private" if meta.get("private") else "public",
-            default_branch=meta.get("default_branch", "main"),
-            status=RepositoryStatus.CONNECTING.value,
-        )
-        db.add(repo)
-        db.flush()  # Populate repo.id before creating the sync record.
+        now = datetime.now(timezone.utc)
 
-        # Create initial sync record.
-        sync = RepositorySync(
-            repository_id=repo.id,
-            status=SyncStatus.QUEUED.value,
-            trigger=SyncTrigger.INITIAL.value,
+        # 4. Reactivate existing record or insert a new one
+        if existing:
+            existing.github_installation_id = installation.id
+            existing.name = meta["name"]
+            existing.full_name = meta["full_name"]
+            existing.owner = meta["owner"]["login"]
+            existing.description = meta.get("description")
+            existing.visibility = "private" if meta.get("private") else "public"
+            existing.default_branch = meta.get("default_branch", "main")
+            existing.status = RepositoryStatus.CONNECTING.value
+            existing.updated_at = now
+            repo = existing
+        else:
+            repo = Repository(
+                organization_id=organization_id,
+                github_installation_id=installation.id,
+                github_repository_id=github_repository_id,
+                name=meta["name"],
+                full_name=meta["full_name"],
+                owner=meta["owner"]["login"],
+                description=meta.get("description"),
+                visibility="private" if meta.get("private") else "public",
+                default_branch=meta.get("default_branch", "main"),
+                status=RepositoryStatus.CONNECTING.value,
+                created_at=now,
+                updated_at=now,
+            )
+            db.add(repo)
+
+        try:
+            db.flush()  # Populate repo.id and validate unique constraint
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Repository '{github_repository_id}' is already connected "
+                    "to this organization."
+                ),
+            )
+
+        # 5. Clean up any stale RUNNING syncs from previous connection sessions
+        stale_syncs = (
+            db.query(RepositorySync)
+            .filter(
+                RepositorySync.repository_id == repo.id,
+                RepositorySync.status == SyncStatus.RUNNING.value,
+            )
+            .all()
         )
-        db.add(sync)
-        db.commit()
+        for s in stale_syncs:
+            s.status = SyncStatus.CANCELLED.value
+            s.completed_at = now
+            s.error_message = "Cancelled due to repository reconnection"
+
+        # 6. Ensure an initial QUEUED sync record exists without duplicating
+        sync = (
+            db.query(RepositorySync)
+            .filter(
+                RepositorySync.repository_id == repo.id,
+                RepositorySync.status == SyncStatus.QUEUED.value,
+            )
+            .first()
+        )
+        if not sync:
+            sync = RepositorySync(
+                repository_id=repo.id,
+                status=SyncStatus.QUEUED.value,
+                trigger=SyncTrigger.INITIAL.value,
+            )
+            db.add(sync)
+
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Repository '{github_repository_id}' is already connected "
+                    "to this organization."
+                ),
+            )
+
         db.refresh(repo)
         db.refresh(sync)
 
-        # Publish event to Kafka (or log in stub mode).
+        # 7. Publish repository.connected event to Kafka (or log in stub mode)
         kafka_producer.publish_repository_connected(
             organization_id=organization_id,
             repository_id=repo.id,
@@ -270,6 +344,7 @@ class RepositoryService:
                 "repo_id": repo.id,
                 "full_name": repo.full_name,
                 "sync_id": sync.id,
+                "is_reconnect": bool(existing),
             },
         )
         return repo
