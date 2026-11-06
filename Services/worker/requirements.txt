@@ -1,0 +1,44 @@
+# Worker Service Dependencies
+
+# Async Kafka consumer
+aiokafka
+
+# Database (shared PostgreSQL with repository service)
+sqlalchemy
+psycopg
+psycopg-binary
+
+# Settings
+pydantic-settings
+
+# GitHub API (to fetch files during sync)
+httpx
+PyJWT
+cryptography
+
+# AI / Embeddings
+fastembed                # Local embedding generation — no API key, no cost
+tiktoken                 # Token counting for chunking
+
+# Vector database client
+# Pin to match qdrant server version in docker-compose (v1.9.2).
+# Client major must match server, minor diff must not exceed 1.
+qdrant-client==1.9.2
+
+# Repository file processing
+gitpython                # Clone/fetch repositories locally
+chardet                  # Charset detection for text files
+
+# Symbol extraction — language-agnostic AST parsing
+tree-sitter              # Core tree-sitter Python bindings
+tree-sitter-python       # Python grammar
+tree-sitter-javascript   # JavaScript grammar
+tree-sitter-typescript   # TypeScript grammar (JS superset grammar)
+
+# Observability / logging
+python-json-logger
+
+# Testing
+pytest
+pytest-asyncio
+pytest-cov

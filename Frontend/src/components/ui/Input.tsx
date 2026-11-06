@@ -18,7 +18,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
         {label && (
           <label
             htmlFor={inputId}
-            className="text-sm font-medium text-gray-700"
+            className="text-xs font-medium text-surface-300"
           >
             {label}
           </label>
@@ -26,7 +26,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
 
         <div className="relative">
           {leftIcon && (
-            <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none">
+            <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-surface-400 pointer-events-none">
               {leftIcon}
             </span>
           )}
@@ -52,7 +52,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
         </div>
 
         {error && (
-          <p className="text-xs text-red-500 flex items-center gap-1">
+          <p className="text-xs text-red-400 flex items-center gap-1 mt-0.5">
             <svg className="w-3.5 h-3.5 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
               <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
             </svg>
@@ -61,7 +61,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
         )}
 
         {hint && !error && (
-          <p className="text-xs text-gray-400">{hint}</p>
+          <p className="text-xs text-surface-500 mt-0.5">{hint}</p>
         )}
       </div>
     );
@@ -83,7 +83,7 @@ export function PasswordInput(props: Omit<InputProps, 'type' | 'rightElement'>) 
         <button
           type="button"
           onClick={() => setShow((s) => !s)}
-          className="text-gray-400 hover:text-gray-700 transition-colors"
+          className="text-surface-400 hover:text-white transition-colors"
         >
           {show ? (
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

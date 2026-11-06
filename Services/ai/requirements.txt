@@ -1,0 +1,44 @@
+# AI Service Dependencies
+
+# Web framework
+fastapi
+uvicorn[standard]
+
+# Database (shared PostgreSQL)
+sqlalchemy
+psycopg
+psycopg-binary
+alembic
+
+# Settings
+pydantic-settings
+
+# Auth (JWT validation — shared secret with API service)
+python-jose[cryptography]
+passlib[bcrypt]
+
+# AI / LLM
+openai                   # HTTP client reused for Groq (OpenAI-compatible API)
+fastembed                # Local query embeddings — no API key, no cost
+tiktoken                 # Token counting
+
+# Agentic workflows (Phase 3)
+langgraph                # Multi-step LangGraph agent graphs
+langchain-core           # Core primitives used by langgraph
+
+# Vector search
+qdrant-client==1.9.2     # Must match server version
+
+# HTTP client (for repository service tool calls)
+httpx
+
+# Streaming
+sse-starlette            # Server-Sent Events for streaming AI responses
+
+# Observability
+python-json-logger
+
+# Testing
+pytest
+pytest-asyncio
+httpx                    # For TestClient

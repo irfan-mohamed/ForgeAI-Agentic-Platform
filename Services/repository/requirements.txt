@@ -12,8 +12,11 @@ PyJWT
 cryptography
 httpx
 
-# Kafka (stub mode default — flip KAFKA_ENABLED=true when Worker is ready)
+# Kafka — stub mode default (set KAFKA_ENABLED=true when Worker is running)
+# kafka-python used for synchronous publishing from FastAPI routes
+# aiokafka used by Worker for async consumption
 aiokafka
+kafka-python
 
 # Testing
 pytest

@@ -13,7 +13,7 @@ from app.db.database import engine
 # Import all models so SQLAlchemy registers them with Base.metadata
 import app.models  # noqa: F401 — side-effect import
 
-from app.api.routes import github, repositories
+from app.api.routes import github, pull_requests, repositories, internal
 
 # ── Logging ────────────────────────────────────────────────────────────────────
 setup_logging()
@@ -77,7 +77,8 @@ def health_check():
         "version": "0.1.0",
     }
 
-
 # ── Routes ─────────────────────────────────────────────────────────────────────
 app.include_router(github.router, prefix=settings.API_V1_STR)
 app.include_router(repositories.router, prefix=settings.API_V1_STR)
+app.include_router(pull_requests.router, prefix=settings.API_V1_STR)
+app.include_router(internal.router, prefix=settings.API_V1_STR)

@@ -17,6 +17,10 @@ export const organizationsApi = {
   listMembers: (orgId: number) =>
     apiClient.get<Membership[]>(`/api/v1/organizations/${orgId}/members`),
 
+  /** Add a new member by email. */
+  addMember: (orgId: number, email: string) =>
+    apiClient.post<Membership>(`/api/v1/organizations/${orgId}/members`, { email }),
+
   /** Update a member's role within an organization. */
   updateRole: (orgId: number, userId: number, role: string) =>
     apiClient.patch<Membership>(

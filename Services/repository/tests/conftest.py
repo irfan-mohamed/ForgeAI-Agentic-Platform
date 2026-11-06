@@ -39,7 +39,7 @@ from app.db.database import get_db
 TEST_DB_URL = "sqlite:///./test_repo.db"
 test_engine = create_engine(
     TEST_DB_URL,
-    connect_args={"check_same_thread": False},
+    connect_args={"check_same_thread": False, "timeout": 20},
 )
 TestSessionLocal = sessionmaker(bind=test_engine, autoflush=False, autocommit=False)
 
@@ -72,9 +72,10 @@ def drop_all_tables():
         conn.commit()
 
 
-@pytest.fixture(scope="session", autouse=True)
+@pytest.fixture(autouse=True)
 def setup_database():
-    """Creates all tables once per test session."""
+    """Creates all tables before each test and drops them after."""
+    drop_all_tables()
     create_all_tables()
     yield
     drop_all_tables()

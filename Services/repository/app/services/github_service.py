@@ -223,3 +223,92 @@ def validate_webhook_signature(raw_body: bytes, signature_header: str | None) ->
         digestmod=hashlib.sha256,
     )
     return hmac.compare_digest(mac.hexdigest(), expected_hex)
+
+
+# ── Pull requests ─────────────────────────────────────────────────────────────
+
+class GitHubNotFoundError(RuntimeError):
+    """GitHub answered 404 (e.g. the pull request does not exist)."""
+
+
+def _get_json(
+    url: str,
+    installation_token: str,
+    context: str,
+    params: dict[str, Any] | None = None,
+) -> Any:
+    """GET helper for installation-authenticated calls. 404 → GitHubNotFoundError."""
+    with httpx.Client(timeout=30.0) as client:
+        response = client.get(
+            url,
+            headers=_installation_headers(installation_token),
+            params=params,
+        )
+    if response.status_code == 404:
+        raise GitHubNotFoundError(f"GitHub returned 404 during '{context}'.")
+    _raise_for_github_error(response, context)
+    return response.json()
+
+
+def list_pull_requests(
+    installation_token: str,
+    full_name: str,
+    state: str = "open",
+    page: int = 1,
+    per_page: int = 20,
+) -> list[dict[str, Any]]:
+    """Lists pull requests of a repository, most recently updated first."""
+    return _get_json(
+        f"{GITHUB_API}/repos/{full_name}/pulls",
+        installation_token,
+        "list_pull_requests",
+        {
+            "state": state,
+            "page": page,
+            "per_page": per_page,
+            "sort": "updated",
+            "direction": "desc",
+        },
+    )
+
+
+def get_pull_request(
+    installation_token: str,
+    full_name: str,
+    number: int,
+) -> dict[str, Any]:
+    """Fetches one pull request."""
+    return _get_json(
+        f"{GITHUB_API}/repos/{full_name}/pulls/{number}",
+        installation_token,
+        "get_pull_request",
+    )
+
+
+def list_pull_request_files(
+    installation_token: str,
+    full_name: str,
+    number: int,
+    max_files: int = 300,
+) -> tuple[list[dict[str, Any]], bool]:
+    """
+    Lists the changed files of a pull request (with unified-diff patches).
+
+    Returns (files, truncated). GitHub caps this endpoint at 3000 files; we
+    stop at ``max_files`` to keep reviews bounded.
+    """
+    per_page = 100
+    files: list[dict[str, Any]] = []
+    page = 1
+    while len(files) < max_files:
+        batch = _get_json(
+            f"{GITHUB_API}/repos/{full_name}/pulls/{number}/files",
+            installation_token,
+            "list_pull_request_files",
+            {"per_page": per_page, "page": page},
+        )
+        files.extend(batch)
+        if len(batch) < per_page:
+            return files, False
+        page += 1
+    return files[:max_files], True

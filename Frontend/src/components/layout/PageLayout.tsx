@@ -3,14 +3,19 @@ import { Sidebar } from './Sidebar';
 
 interface PageLayoutProps {
   children: React.ReactNode;
+  fullBleed?: boolean;
 }
 
-export function PageLayout({ children }: PageLayoutProps) {
+export function PageLayout({ children, fullBleed = false }: PageLayoutProps) {
   return (
-    <div className="flex h-screen overflow-hidden">
+    <div className="flex h-screen overflow-hidden bg-surface-950">
       <Sidebar />
-      <main className="flex-1 overflow-y-auto canvas-bg">
-        <div className="p-8 animate-fade-in">{children}</div>
+      <main className="flex-1 overflow-y-auto canvas-bg min-w-0">
+        {fullBleed ? (
+          children
+        ) : (
+          <div className="p-8 max-w-7xl mx-auto animate-fade-in">{children}</div>
+        )}
       </main>
     </div>
   );
@@ -26,14 +31,14 @@ interface PageHeaderProps {
 
 export function PageHeader({ title, subtitle, action }: PageHeaderProps) {
   return (
-    <div className="flex items-start justify-between gap-4 mb-8">
+    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
       <div>
-        <h1 className="text-2xl font-bold text-gray-900">{title}</h1>
+        <h1 className="text-2xl font-bold text-white tracking-tight">{title}</h1>
         {subtitle && (
-          <p className="text-gray-500 mt-1">{subtitle}</p>
+          <p className="text-surface-400 mt-1 text-sm">{subtitle}</p>
         )}
       </div>
-      {action}
+      {action && <div className="flex items-center gap-3">{action}</div>}
     </div>
   );
 }

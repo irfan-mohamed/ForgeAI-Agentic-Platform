@@ -1,6 +1,6 @@
 services:
 
-  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  # ── PostgreSQL ───────────────────────────────────────────────────────────────
   db:
     image: postgres:16-alpine
     restart: always
@@ -18,11 +18,88 @@ services:
       timeout: 5s
       retries: 5
 
-  # ── Backend API ─────────────────────────────────────────────────────────────
+  # ── Zookeeper (required by Kafka) ────────────────────────────────────────────
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.1
+    restart: always
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+      - zookeeper_log:/var/lib/zookeeper/log
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 2181 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Apache Kafka ──────────────────────────────────────────────────────────────
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    restart: always
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: 168
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  # ── Kafka UI (browse topics and messages) ─────────────────────────────────────
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    restart: always
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: forgeai-local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+
+  # ── Qdrant (vector database) ──────────────────────────────────────────────────
+  # Qdrant image is Debian-based but has NO curl/wget installed.
+  # Use bash /dev/tcp redirect to check TCP port 6333 is open.
+  qdrant:
+    image: qdrant/qdrant:v1.9.2
+    restart: always
+    ports:
+      - "6333:6333"     # REST API + Web UI
+      - "6334:6334"     # gRPC
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      # bash IS available — uses /dev/tcp to check port is open
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/6333 && echo -e \"GET /healthz HTTP/1.0\\r\\n\\r\\n\" >&3 && cat <&3 | grep -q 200'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s    # Give Qdrant time to fully start before first check
+
+  # ── Backend API Service ──────────────────────────────────────────────────────
   api:
     build:
       context: ./Services/api
       dockerfile: Dockerfile
+    restart: always
     ports:
       - "8000:8000"
     volumes:
@@ -34,43 +111,131 @@ services:
       db:
         condition: service_healthy
 
-  # ── Repository Service ──────────────────────────────────────────────────────
+  # ── Repository Service ───────────────────────────────────────────────────────
   repository:
     build:
       context: ./Services/repository
       dockerfile: Dockerfile
+    restart: always
     ports:
       - "8001:8001"
     volumes:
       - ./Services/repository:/app
-      # Mount the PEM key file read-only — avoids env_file parser issues with
-      # multi-line RSA keys (Docker Compose env_file can't handle them).
       - ./Services/repository/github-app.private-key.pem:/run/github-app.pem:ro
     environment:
       DATABASE_URL: postgresql+psycopg://forgeai:Irfan%40123@db:5432/forgeai
       SECRET_KEY: ${SECRET_KEY:-change-me-in-production-use-a-long-random-string}
-      GITHUB_APP_ID: ${GITHUB_APP_ID:-5224545}
+      GITHUB_APP_ID: ${GITHUB_APP_ID:-}
       GITHUB_APP_NAME: ${GITHUB_APP_NAME:-forgeai-local}
-      # Path to the mounted PEM file — security.py reads from this file.
       GITHUB_APP_PRIVATE_KEY_FILE: /run/github-app.pem
       GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-your-webhook-secret}
       GITHUB_CALLBACK_REDIRECT_URL: http://localhost:5173/github/callback
-      KAFKA_ENABLED: ${KAFKA_ENABLED:-false}
-      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:-localhost:9092}
+      # kafka:29092 = internal Docker network listener
+      KAFKA_ENABLED: ${KAFKA_ENABLED:-true}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_TOPIC_REPOSITORY_EVENTS: repository.events
+      KAFKA_TOPIC_REPOSITORY_SYNC: repository.sync
     depends_on:
       db:
         condition: service_healthy
+      kafka:
+        condition: service_healthy
 
-  # ── Frontend ────────────────────────────────────────────────────────────────
+  # ── Worker Service ────────────────────────────────────────────────────────────
+  worker:
+    build:
+      context: ./Services/worker
+      dockerfile: Dockerfile
+    restart: always
+    volumes:
+      - ./Services/worker:/app
+      - ./Services/repository/github-app.private-key.pem:/run/github-app.pem:ro
+      - worker_clones:/tmp/forgeai_worker_clones
+    environment:
+      # All addresses use Docker service names — NOT localhost
+      DATABASE_URL: postgresql+psycopg://forgeai:Irfan%40123@db:5432/forgeai
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_CONSUMER_GROUP_ID: forgeai-worker
+      KAFKA_TOPIC_REPOSITORY_EVENTS: repository.events
+      KAFKA_TOPIC_REPOSITORY_SYNC: repository.sync
+      GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+      GITHUB_APP_NAME: ${GITHUB_APP_NAME:-forgeai-local}
+      GITHUB_APP_PRIVATE_KEY_FILE: /run/github-app.pem
+      # Embeddings: fastembed runs locally — no API key needed
+      EMBEDDING_MODEL: BAAI/bge-small-en-v1.5
+      EMBEDDING_DIMENSIONS: 384
+      # Qdrant inside Docker — use service name, NOT localhost
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_API_KEY: ""
+      QDRANT_COLLECTION_NAME: repository_knowledge
+      CHUNK_MAX_TOKENS: 512
+      CHUNK_OVERLAP_TOKENS: 64
+      CLONE_BASE_DIR: /tmp/forgeai_worker_clones
+    depends_on:
+      db:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+
+  # ── AI Service ───────────────────────────────────────────────────────────────
+  ai:
+    build:
+      context: ./Services/ai
+      dockerfile: Dockerfile
+    restart: always
+    ports:
+      - "8002:8002"
+    volumes:
+      - ./Services/ai:/app
+    environment:
+      DATABASE_URL: postgresql+psycopg://forgeai:Irfan%40123@db:5432/forgeai
+      SECRET_KEY: ${SECRET_KEY:-change-me-in-production-use-a-long-random-string}
+      # Groq API (OpenAI-compatible) — free tier at console.groq.com
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_CHAT_MODEL: ${GROQ_CHAT_MODEL:-openai/gpt-oss-120b}
+      GROQ_REVIEW_MODEL: ${GROQ_REVIEW_MODEL:-openai/gpt-oss-120b}
+      # Embeddings: fastembed runs locally — MUST match worker dimensions
+      EMBEDDING_MODEL: BAAI/bge-small-en-v1.5
+      EMBEDDING_DIMENSIONS: 384
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_API_KEY: ""
+      QDRANT_COLLECTION_NAME: repository_knowledge
+      # Must point at the Repository Service container (not localhost)
+      REPOSITORY_SERVICE_URL: http://repository:8001
+      CORS_ORIGINS: '["http://localhost:5173","http://localhost:3000"]'
+      # Phase 3 - LangGraph QA settings
+      LANGGRAPH_MAX_ITERATIONS: 3
+    depends_on:
+      db:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8002/\")'"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ── Frontend ─────────────────────────────────────────────────────────────────
   frontend:
     build:
       context: ./Frontend
       dockerfile: Dockerfile
+    restart: always
     ports:
       - "5173:80"
     depends_on:
       - api
       - repository
+      - ai
 
 volumes:
   postgres_data:
+  zookeeper_data:
+  zookeeper_log:
+  kafka_data:
+  qdrant_data:
+  worker_clones:

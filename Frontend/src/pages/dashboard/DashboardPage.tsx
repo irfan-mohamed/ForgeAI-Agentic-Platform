@@ -2,112 +2,37 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
 import { organizationsApi } from '@/api/organizations';
+import { repositoryApi } from '@/api/repository';
+import { reviewsApi } from '@/api/reviews';
 import { PageLayout, PageHeader } from '@/components/layout/PageLayout';
 import { Card, StatCard } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { StatusBadge, RoleBadge } from '@/components/ui/Badge';
 import { Spinner } from '@/components/ui/Spinner';
-import type { Organization, Membership } from '@/types';
+import type { Organization, Membership, Repository, CodeReviewSummary } from '@/types';
 import type { AxiosError } from 'axios';
-
-// ── Org card in the list ──────────────────────────────────────────────────────
-
-function OrgCard({
-  org,
-  membership,
-  onSelect,
-}: {
-  org: Organization;
-  membership?: Membership;
-  onSelect: (org: Organization) => void;
-}) {
-  const navigate = useNavigate();
-
-  return (
-    <div className="glass-card p-5 hover:border-forge-300/60 transition-all duration-200 group w-full">
-      {/* Clickable top area — selects org in the right panel */}
-      <div
-        role="button"
-        tabIndex={0}
-        onClick={() => onSelect(org)}
-        onKeyDown={(e) => e.key === 'Enter' && onSelect(org)}
-        className="cursor-pointer"
-      >
-        <div className="flex items-start justify-between gap-3 mb-3">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-forge-100 to-purple-100 border border-forge-200/60 flex items-center justify-center text-forge-600 font-bold text-sm flex-shrink-0 group-hover:scale-105 transition-transform">
-            {org.name.charAt(0).toUpperCase()}
-          </div>
-          <div className="flex items-center gap-2">
-            <StatusBadge status={org.status} />
-            {membership && <RoleBadge role={membership.role} />}
-          </div>
-        </div>
-        <h3 className="text-gray-900 font-semibold text-sm group-hover:text-forge-700 transition-colors">
-          {org.name}
-        </h3>
-        <p className="text-gray-400 text-xs mt-0.5 font-mono">/{org.slug}</p>
-        {org.description && (
-          <p className="text-gray-500 text-xs mt-2 line-clamp-2">{org.description}</p>
-        )}
-      </div>
-
-      {/* Repositories shortcut — separate from the select area */}
-      <div className="mt-3 pt-3 border-t border-gray-100 flex items-center justify-between">
-        <button
-          onClick={() => navigate(`/organizations/${org.id}/repositories`)}
-          className="flex items-center gap-1.5 text-xs text-forge-600 hover:text-forge-700 font-medium transition-colors"
-        >
-          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-              d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-          </svg>
-          Manage Repositories
-        </button>
-        <svg className="w-3.5 h-3.5 text-forge-400 opacity-0 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-        </svg>
-      </div>
-    </div>
-  );
-}
-
-
-// ── Member list in the selected org panel ─────────────────────────────────────
-
-function MemberRow({ member }: { member: Membership }) {
-  return (
-    <div className="flex items-center gap-3 py-3 border-b border-gray-100 last:border-0">
-      <div className="w-8 h-8 rounded-full bg-gradient-to-br from-forge-100 to-purple-100 flex items-center justify-center text-forge-600 text-xs font-bold flex-shrink-0">
-        {member.user?.name?.charAt(0).toUpperCase() ?? '?'}
-      </div>
-      <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium text-gray-900 truncate">{member.user?.name ?? '—'}</p>
-        <p className="text-xs text-gray-400 truncate">{member.user?.email ?? '—'}</p>
-      </div>
-      <RoleBadge role={member.role} />
-    </div>
-  );
-}
-
-// ── Main dashboard page ───────────────────────────────────────────────────────
 
 export function DashboardPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
 
-  const [orgs, setOrgs]                 = useState<Organization[]>([]);
-  const [members, setMembers]           = useState<Membership[]>([]);
-  const [selectedOrg, setSelectedOrg]   = useState<Organization | null>(null);
-  const [loadingOrgs, setLoadingOrgs]   = useState(true);
-  const [loadingMembers, setLoadingMembers] = useState(false);
+  const [orgs, setOrgs]                       = useState<Organization[]>([]);
+  const [selectedOrg, setSelectedOrg]         = useState<Organization | null>(null);
+  const [members, setMembers]                 = useState<Membership[]>([]);
+  const [repos, setRepos]                     = useState<Repository[]>([]);
+  const [reviews, setReviews]                 = useState<CodeReviewSummary[]>([]);
+  const [loadingOrgs, setLoadingOrgs]         = useState(true);
+  const [loadingDetails, setLoadingDetails]   = useState(false);
 
-  // Fetch user's organizations on mount
+  // Fetch user's organizations
   useEffect(() => {
     organizationsApi
       .list()
       .then((res) => {
         setOrgs(res.data);
-        if (res.data.length === 1) setSelectedOrg(res.data[0]);
+        if (res.data.length > 0) {
+          setSelectedOrg(res.data[0]);
+        }
       })
       .catch((err: AxiosError) => {
         if (err.response?.status === 401) navigate('/login');
@@ -115,14 +40,23 @@ export function DashboardPage() {
       .finally(() => setLoadingOrgs(false));
   }, [navigate]);
 
-  // Fetch members when selectedOrg changes
+  // Fetch details when selectedOrg changes
   useEffect(() => {
     if (!selectedOrg) return;
-    setLoadingMembers(true);
-    organizationsApi
-      .listMembers(selectedOrg.id)
-      .then((res) => setMembers(res.data))
-      .finally(() => setLoadingMembers(false));
+    setLoadingDetails(true);
+
+    Promise.all([
+      organizationsApi.listMembers(selectedOrg.id),
+      repositoryApi.listRepos(selectedOrg.id),
+      reviewsApi.listReviews(selectedOrg.id).catch(() => ({ data: { reviews: [], total: 0 } })),
+    ])
+      .then(([memberRes, repoRes, reviewRes]) => {
+        setMembers(memberRes.data);
+        setRepos(repoRes.data.repositories);
+        setReviews(reviewRes.data.reviews || []);
+      })
+      .catch(console.error)
+      .finally(() => setLoadingDetails(false));
   }, [selectedOrg]);
 
   const greeting = () => {
@@ -132,163 +66,308 @@ export function DashboardPage() {
     return 'Good evening';
   };
 
+  const readyRepos = repos.filter(r => r.status === 'ready');
+
   return (
     <PageLayout>
-      {/* ── Page header ── */}
+      {/* ── Page Header ── */}
       <PageHeader
-        title={`${greeting()}, ${user?.name?.split(' ')[0]} 👋`}
-        subtitle="Here's an overview of your FlowForge workspace."
+        title={`${greeting()}, ${user?.name?.split(' ')[0] || 'Engineer'} ⚡`}
+        subtitle="Manage your connected repositories, AI conversations, and automated code reviews."
         action={
-          <Button
-            variant="primary"
-            size="md"
-            onClick={() => navigate('/setup')}
-            leftIcon={
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-              </svg>
-            }
-          >
-            New Organization
-          </Button>
+          <div className="flex items-center gap-3">
+            {selectedOrg && (
+              <Button
+                variant="secondary"
+                size="md"
+                onClick={() => navigate(`/organizations/${selectedOrg.id}/ai`)}
+                leftIcon={
+                  <svg className="w-4 h-4 text-forge-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                      d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                  </svg>
+                }
+              >
+                Open AI Workspace
+              </Button>
+            )}
+            <Button
+              variant="primary"
+              size="md"
+              onClick={() => navigate('/setup')}
+              leftIcon={
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                </svg>
+              }
+            >
+              New Workspace
+            </Button>
+          </div>
         }
       />
 
-      {/* ── Stats row ── */}
+      {/* ── Platform Stat Cards ── */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         <StatCard
-          label="Organizations"
+          label="Workspaces"
           value={orgs.length}
           icon={
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="w-4 h-4 text-forge-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5" />
             </svg>
           }
         />
         <StatCard
-          label="Team members"
-          value={selectedOrg ? members.length : '—'}
+          label="Connected Repos"
+          value={repos.length}
           color="text-emerald-400"
           icon={
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
+            <svg className="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
             </svg>
           }
         />
         <StatCard
-          label="Onboarding tasks"
-          value="Coming soon"
-          color="text-amber-400"
+          label="Indexed & Ready"
+          value={readyRepos.length}
+          color="text-cyan-400"
           icon={
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+            <svg className="w-4 h-4 text-cyan-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
           }
         />
         <StatCard
-          label="AI questions answered"
-          value="Coming soon"
+          label="PR Code Reviews"
+          value={reviews.length}
           color="text-purple-400"
           icon={
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+            <svg className="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
             </svg>
           }
         />
       </div>
 
-      {/* ── Main content grid ── */}
+      {/* ── Main Content Grid ── */}
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
-        {/* Org list */}
+        {/* Left: Organizations List */}
         <div className="lg:col-span-2">
           <Card>
             <div className="flex items-center justify-between mb-5">
-              <h2 className="font-semibold text-gray-900">Your Organizations</h2>
+              <div>
+                <h2 className="font-semibold text-white text-sm">Workspaces</h2>
+                <p className="text-surface-400 text-xs">Switch your active tenant</p>
+              </div>
               {orgs.length > 0 && (
-                <span className="text-xs text-gray-400">{orgs.length} total</span>
+                <span className="text-xs font-mono text-surface-500">{orgs.length} total</span>
               )}
             </div>
 
             {loadingOrgs ? (
-              <div className="flex justify-center py-8">
+              <div className="flex justify-center py-10">
                 <Spinner />
               </div>
             ) : orgs.length === 0 ? (
-              <div className="flex flex-col items-center py-10 gap-3">
-                <div className="w-12 h-12 rounded-2xl bg-violet-50 flex items-center justify-center text-forge-400">
+              <div className="flex flex-col items-center py-10 gap-3 text-center">
+                <div className="w-12 h-12 rounded-2xl bg-surface-800 border border-white/10 flex items-center justify-center text-forge-400">
                   <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8}
                       d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5" />
                   </svg>
                 </div>
-                <p className="text-gray-500 text-sm text-center">
-                  No organizations yet.<br />Create one to get started.
+                <p className="text-surface-400 text-xs">
+                  No organization workspaces found.<br />Create your first workspace to begin.
                 </p>
                 <Button variant="primary" size="sm" onClick={() => navigate('/setup')}>
-                  Create organization
+                  Create Workspace
                 </Button>
               </div>
             ) : (
-              <div className="flex flex-col gap-3">
-                {orgs.map((org) => (
-                  <OrgCard
-                    key={org.id}
-                    org={org}
-                    onSelect={setSelectedOrg}
-                  />
-                ))}
+              <div className="flex flex-col gap-2.5">
+                {orgs.map((org) => {
+                  const isSelected = selectedOrg?.id === org.id;
+                  return (
+                    <div
+                      key={org.id}
+                      onClick={() => setSelectedOrg(org)}
+                      className={`p-4 rounded-xl border cursor-pointer transition-all ${
+                        isSelected
+                          ? 'bg-forge-600/15 border-forge-500/40 shadow-lg shadow-forge-950/40'
+                          : 'bg-surface-800/60 border-white/5 hover:border-white/15 hover:bg-surface-800'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex items-center gap-3">
+                          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-forge-500/20 to-purple-600/20 border border-forge-500/30 flex items-center justify-center text-forge-300 font-bold text-xs flex-shrink-0">
+                            {org.name.charAt(0).toUpperCase()}
+                          </div>
+                          <div>
+                            <h3 className="text-white font-semibold text-xs leading-snug">{org.name}</h3>
+                            <p className="text-surface-500 text-[11px] font-mono">/{org.slug}</p>
+                          </div>
+                        </div>
+                        <StatusBadge status={org.status} />
+                      </div>
+
+                      {/* Quick Links inside selected org card */}
+                      <div className="mt-3 pt-3 border-t border-white/5 flex items-center gap-4 text-xs">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            navigate(`/organizations/${org.id}/repositories`);
+                          }}
+                          className="text-forge-400 hover:text-forge-300 font-medium flex items-center gap-1 transition-colors"
+                        >
+                          Repos →
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            navigate(`/organizations/${org.id}/ai`);
+                          }}
+                          className="text-purple-400 hover:text-purple-300 font-medium flex items-center gap-1 transition-colors"
+                        >
+                          AI Chat →
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            navigate(`/organizations/${org.id}/reviews`);
+                          }}
+                          className="text-cyan-400 hover:text-cyan-300 font-medium flex items-center gap-1 transition-colors"
+                        >
+                          Reviews →
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </Card>
         </div>
 
-        {/* Selected org detail */}
+        {/* Right: Selected Workspace Overview */}
         <div className="lg:col-span-3">
           {selectedOrg ? (
             <Card>
-              <div className="flex items-start justify-between mb-6">
+              <div className="flex items-start justify-between pb-5 border-b border-white/8 mb-6">
                 <div>
-                  <h2 className="font-semibold text-gray-900">{selectedOrg.name}</h2>
-                  <p className="text-xs text-gray-400 font-mono mt-0.5">/{selectedOrg.slug}</p>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-lg font-bold text-white tracking-tight">{selectedOrg.name}</h2>
+                    <StatusBadge status={selectedOrg.status} />
+                  </div>
+                  <p className="text-xs text-surface-400 font-mono mt-0.5">slug: {selectedOrg.slug}</p>
+                  {selectedOrg.description && (
+                    <p className="text-xs text-surface-400 mt-2 leading-relaxed">{selectedOrg.description}</p>
+                  )}
                 </div>
-                <StatusBadge status={selectedOrg.status} />
+
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => navigate(`/organizations/${selectedOrg.id}/repositories`)}
+                >
+                  Manage Repos
+                </Button>
               </div>
 
-              {selectedOrg.description && (
-                <p className="text-gray-500 text-sm mb-5">{selectedOrg.description}</p>
-              )}
+              {/* Repositories in this org */}
+              <div className="mb-6">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-xs font-semibold text-white uppercase tracking-wider">
+                    Connected Repositories ({repos.length})
+                  </h3>
+                  <button
+                    onClick={() => navigate(`/organizations/${selectedOrg.id}/repositories`)}
+                    className="text-xs text-forge-400 hover:text-forge-300 font-medium"
+                  >
+                    View All →
+                  </button>
+                </div>
 
-              <h3 className="text-sm font-medium text-gray-700 mb-3">
-                Members
-                {!loadingMembers && (
-                  <span className="ml-2 text-gray-400 font-normal">{members.length}</span>
+                {loadingDetails ? (
+                  <div className="flex justify-center py-6"><Spinner size="sm" /></div>
+                ) : repos.length === 0 ? (
+                  <div className="p-5 rounded-xl bg-surface-900/60 border border-white/5 text-center">
+                    <p className="text-xs text-surface-400 mb-3">No repositories connected to this workspace yet.</p>
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      onClick={() => navigate(`/organizations/${selectedOrg.id}/repositories`)}
+                    >
+                      Connect GitHub Repository
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {repos.slice(0, 4).map((r) => (
+                      <div
+                        key={r.id}
+                        onClick={() => navigate(`/organizations/${selectedOrg.id}/ai`)}
+                        className="p-3.5 rounded-xl bg-surface-900/80 border border-white/5 hover:border-forge-500/30 transition-all cursor-pointer group"
+                      >
+                        <div className="flex items-center justify-between mb-1.5">
+                          <p className="text-xs font-semibold text-white truncate group-hover:text-forge-300 transition-colors">
+                            {r.name}
+                          </p>
+                          <span className={`text-[10px] font-mono uppercase px-1.5 py-0.5 rounded ${
+                            r.status === 'ready'
+                              ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                              : 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
+                          }`}>
+                            {r.status}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-surface-500 font-mono truncate">{r.full_name}</p>
+                      </div>
+                    ))}
+                  </div>
                 )}
-              </h3>
+              </div>
 
-              {loadingMembers ? (
-                <div className="flex justify-center py-6">
-                  <Spinner size="sm" />
+              {/* Members in this org */}
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-xs font-semibold text-white uppercase tracking-wider">
+                    Engineering Team ({members.length})
+                  </h3>
+                  <button
+                    onClick={() => navigate(`/organizations/${selectedOrg.id}/members`)}
+                    className="text-xs text-forge-400 hover:text-forge-300 font-medium"
+                  >
+                    Manage Team →
+                  </button>
                 </div>
-              ) : (
-                <div>
-                  {members.map((m) => (
-                    <MemberRow key={m.id} member={m} />
-                  ))}
-                </div>
-              )}
+
+                {loadingDetails ? (
+                  <div className="flex justify-center py-6"><Spinner size="sm" /></div>
+                ) : (
+                  <div className="divide-y divide-white/5 bg-surface-900/50 rounded-xl border border-white/5 px-4">
+                    {members.slice(0, 5).map((m) => (
+                      <div key={m.id} className="py-2.5 flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-3">
+                          <div className="w-7 h-7 rounded-full bg-forge-600/30 border border-forge-500/30 text-forge-300 flex items-center justify-center text-xs font-bold">
+                            {m.user?.name?.charAt(0).toUpperCase() || 'U'}
+                          </div>
+                          <div>
+                            <p className="text-xs font-medium text-white">{m.user?.name || 'Engineer'}</p>
+                            <p className="text-[11px] text-surface-500">{m.user?.email}</p>
+                          </div>
+                        </div>
+                        <RoleBadge role={m.role} />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </Card>
           ) : (
             <Card>
-              <div className="flex flex-col items-center justify-center py-16 gap-3 text-center">
-                <div className="w-14 h-14 rounded-2xl bg-violet-50 flex items-center justify-center text-forge-400">
-                  <svg className="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                      d="M15 19l-7-7 7-7" />
-                  </svg>
-                </div>
-                <p className="text-gray-500 text-sm">
-                  Select an organization to view details
-                </p>
+              <div className="flex flex-col items-center justify-center py-16 text-center text-surface-400">
+                <p className="text-sm">Select an organization workspace to view details</p>
               </div>
             </Card>
           )}
