@@ -68,16 +68,21 @@ def _setup_symbol_fts(engine) -> None:
     """
     Adds a tsvector search_vector column + update trigger to code_symbols.
 
-    The trigger automatically recomputes the tsvector whenever a row is
-    inserted or updated, using:
-      - symbol_name   (weight A — highest priority)
-      - qualified_name (weight B)
-      - signature      (weight C)
-      - docstring      (weight D)
+    Uses the ``simple`` text-search configuration instead of ``english``:
+    stemming corrupts identifiers (``services`` → ``servic``) and makes code
+    search unpredictable. The trigger weights:
+      - symbol_name    (A — highest priority)
+      - qualified_name (B)
+      - signature      (C)
+      - docstring      (D)
+
+    Also enables ``pg_trgm`` and adds GIN trigram indexes so substring and
+    fuzzy identifier lookups (``ILIKE '%login%'``) stay fast. The extension is
+    optional — setup degrades to plain FTS if it cannot be created.
 
     Only runs for PostgreSQL. Silently skips for SQLite (used in tests).
     """
-    from sqlalchemy import text, inspect
+    from sqlalchemy import text
     from app.db.database import get_db_session
 
     dialect = engine.dialect.name
@@ -100,16 +105,39 @@ def _setup_symbol_fts(engine) -> None:
             USING GIN (search_vector)
         """))
 
+        # Optional trigram support for identifier substring search.
+        trigram_available = False
+        try:
+            with db.begin_nested():
+                db.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
+            trigram_available = True
+        except Exception as exc:  # pragma: no cover - depends on DB privileges
+            logger.warning(
+                "pg_trgm unavailable — identifier substring search will be slower",
+                extra={"error": str(exc)},
+            )
+
+        if trigram_available:
+            for index_name, column in (
+                ("ix_syms_symbol_name_trgm", "symbol_name"),
+                ("ix_syms_qualified_name_trgm", "qualified_name"),
+            ):
+                db.execute(text(f"""
+                    CREATE INDEX IF NOT EXISTS {index_name}
+                    ON code_symbols
+                    USING GIN ({column} gin_trgm_ops)
+                """))
+
         # Create the trigger function
         db.execute(text("""
             CREATE OR REPLACE FUNCTION code_symbols_fts_update()
             RETURNS trigger AS $$
             BEGIN
                 NEW.search_vector :=
-                    setweight(to_tsvector('english', coalesce(NEW.symbol_name, '')), 'A')
-                    || setweight(to_tsvector('english', coalesce(NEW.qualified_name, '')), 'B')
-                    || setweight(to_tsvector('english', coalesce(NEW.signature, '')), 'C')
-                    || setweight(to_tsvector('english', coalesce(NEW.docstring, '')), 'D');
+                    setweight(to_tsvector('simple', coalesce(NEW.symbol_name, '')), 'A')
+                    || setweight(to_tsvector('simple', coalesce(NEW.qualified_name, '')), 'B')
+                    || setweight(to_tsvector('simple', coalesce(NEW.signature, '')), 'C')
+                    || setweight(to_tsvector('simple', coalesce(NEW.docstring, '')), 'D');
                 RETURN NEW;
             END;
             $$ LANGUAGE plpgsql;
@@ -126,18 +154,21 @@ def _setup_symbol_fts(engine) -> None:
             FOR EACH ROW EXECUTE FUNCTION code_symbols_fts_update()
         """))
 
-        # Backfill existing rows
+        # Backfill every row: config changed from english → simple, and the
+        # trigger only runs on future writes.
         db.execute(text("""
             UPDATE code_symbols SET search_vector =
-                setweight(to_tsvector('english', coalesce(symbol_name, '')), 'A')
-                || setweight(to_tsvector('english', coalesce(qualified_name, '')), 'B')
-                || setweight(to_tsvector('english', coalesce(signature, '')), 'C')
-                || setweight(to_tsvector('english', coalesce(docstring, '')), 'D')
-            WHERE search_vector IS NULL
+                setweight(to_tsvector('simple', coalesce(symbol_name, '')), 'A')
+                || setweight(to_tsvector('simple', coalesce(qualified_name, '')), 'B')
+                || setweight(to_tsvector('simple', coalesce(signature, '')), 'C')
+                || setweight(to_tsvector('simple', coalesce(docstring, '')), 'D')
         """))
 
         db.commit()
-    logger.info("Full-text search setup complete for code_symbols")
+    logger.info(
+        "Full-text search setup complete for code_symbols",
+        extra={"trigram": trigram_available},
+    )
 
 
 async def _startup_qdrant() -> None:

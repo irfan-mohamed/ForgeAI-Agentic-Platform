@@ -39,6 +39,14 @@ class RepositoryResponse(BaseModel):
     visibility: str
     default_branch: str
     status: str
+    # Readiness checkpoints. A repository can be chat-ready before its vector
+    # index finishes (repo map + symbol graph are enough to start asking).
+    repo_map_ready: bool = False
+    chat_ready: bool = False
+    index_ready: bool = False
+    repo_map_ready_at: datetime | None = None
+    chat_ready_at: datetime | None = None
+    index_ready_at: datetime | None = None
     last_synced_at: datetime | None
     created_at: datetime
     updated_at: datetime

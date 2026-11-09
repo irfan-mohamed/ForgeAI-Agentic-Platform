@@ -27,6 +27,7 @@ Owned by: Repository Service.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -36,7 +37,7 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user_id, get_org_membership
 from app.db.database import get_db
-from app.models.repository import Repository, RepositoryStatus
+from app.models.repository import Repository
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +104,9 @@ class FileEntry(BaseModel):
 class IndexStatus(BaseModel):
     repository_id: int
     status: str
+    repo_map_ready: bool = False
+    chat_ready: bool = False
+    index_ready: bool = False
     total_files: int
     indexed_files: int
     failed_files: int
@@ -111,6 +115,21 @@ class IndexStatus(BaseModel):
     unresolved_relationships: int
     total_relationships: int
     last_synced_at: Optional[str]
+
+
+class RepoMapResponse(BaseModel):
+    repository_id: int
+    organization_id: int
+    commit_sha: Optional[str] = None
+    file_tree: Optional[list[dict]] = None
+    languages: Optional[dict] = None
+    symbols_summary: Optional[list[dict]] = None
+    imports: Optional[list[dict]] = None
+    routes: Optional[list[dict]] = None
+    test_files: Optional[list[str]] = None
+    doc_files: Optional[list[str]] = None
+    raw_markdown: Optional[str] = None
+
 
 
 # ── Repository access guard ───────────────────────────────────────────────────
@@ -133,12 +152,121 @@ def _get_ready_repository(
     if not repo:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Repository not found")
 
-    if require_ready and repo.status != RepositoryStatus.READY.value:
+    # Structural endpoints only need the repo map; they do not wait for the
+    # vector index. ``repo_map_ready`` falls back to status == "ready" for
+    # repositories synced before readiness checkpoints existed.
+    if require_ready and not repo.repo_map_ready:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Repository is not ready for queries (status: {repo.status})",
+            detail=f"Repository map is not ready for queries (status: {repo.status})",
         )
     return repo
+
+
+# ── Full-text helpers ─────────────────────────────────────────────────────────
+
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+_IDENTIFIER_TOKEN = re.compile(r"[A-Za-z0-9_]+")
+
+
+def _symbol_query_tokens(query: str) -> list[str]:
+    """
+    Expands a code-ish query into the lexemes a developer might be looking for.
+
+    "UserService.login" → ["userservice", "login", "user", "service"]
+    "get_user_by_id"    → ["get_user_by_id", "get", "user", "by", "id"]
+    """
+    tokens: list[str] = []
+    for raw in _IDENTIFIER_TOKEN.findall(query):
+        tokens.append(raw)
+        # Split camelCase and snake_case into their parts too.
+        for part in raw.replace("_", " ").split():
+            tokens.append(part)
+            tokens.extend(_CAMEL_BOUNDARY.split(part))
+    seen: set[str] = set()
+    result: list[str] = []
+    for token in tokens:
+        token = token.strip().lower()
+        if len(token) < 2 or token in seen:
+            continue
+        seen.add(token)
+        result.append(token)
+    return result
+
+
+def _build_tsquery(query: str) -> str:
+    """Builds an OR tsquery so any identifier part can match, not all of them."""
+    return " | ".join(_symbol_query_tokens(query))
+
+
+def _search_symbol_rows(
+    db: Session,
+    *,
+    org_id: int,
+    repository_id: int,
+    query: str,
+    symbol_type: Optional[str],
+    language: Optional[str],
+    limit: int,
+) -> list:
+    """
+    Runs symbol search on PostgreSQL (FTS + ILIKE) or SQLite (LIKE).
+
+    PostgreSQL uses the ``simple`` text-search config because stemming English
+    identifiers ("services" → "servic") hurts code search. The ``pg_trgm`` GIN
+    index created by the Worker accelerates the ILIKE fallback.
+    """
+    dialect = db.get_bind().dialect.name
+
+    params: dict = {
+        "repo_id": repository_id,
+        "org_id": org_id,
+        "limit": limit,
+        "like": f"%{query}%",
+    }
+    type_filter = "AND symbol_type = :symbol_type" if symbol_type else ""
+    lang_filter = "AND language = :language" if language else ""
+    if symbol_type:
+        params["symbol_type"] = symbol_type
+    if language:
+        params["language"] = language
+
+    if dialect == "postgresql":
+        tsquery = _build_tsquery(query)
+        params["tsquery"] = tsquery or "forgeaiemptyquery"
+        match_clause = (
+            "AND (search_vector @@ to_tsquery('simple', :tsquery) "
+            "     OR symbol_name ILIKE :like "
+            "     OR qualified_name ILIKE :like)"
+        )
+        order_clause = (
+            "ORDER BY "
+            "CASE WHEN symbol_name ILIKE :like THEN 0 ELSE 1 END, "
+            "ts_rank(search_vector, to_tsquery('simple', :tsquery)) DESC, "
+            "symbol_name"
+        )
+    else:
+        # SQLite dev/test fallback. LIKE is case-insensitive for ASCII.
+        match_clause = "AND (symbol_name LIKE :like OR qualified_name LIKE :like)"
+        order_clause = (
+            "ORDER BY CASE WHEN symbol_name LIKE :like THEN 0 ELSE 1 END, symbol_name"
+        )
+
+    sql = f"""
+        SELECT
+            id, symbol_name, qualified_name, symbol_type, file_path,
+            start_line, end_line, language, is_async, is_exported, signature
+        FROM code_symbols
+        WHERE
+            organization_id = :org_id
+            AND repository_id = :repo_id
+            {type_filter}
+            {lang_filter}
+            {match_clause}
+        {order_clause}
+        LIMIT :limit
+    """
+    return db.execute(text(sql), params).fetchall()
 
 
 # ── 1. Symbol Search ──────────────────────────────────────────────────────────
@@ -159,63 +287,23 @@ def search_symbols(
     db: Session = Depends(get_db),
 ) -> list[SymbolSummary]:
     """
-    Full-text search over code symbols in a repository.
+    Searches code symbols in a repository.
 
-    Uses PostgreSQL FTS (tsvector) for lexical matching. Falls back to
-    ILIKE if tsvector is not yet populated.
+    PostgreSQL uses full-text search (simple config) OR-ed with an ILIKE
+    fallback over symbol/qualified names, so both natural words and exact
+    identifiers work. SQLite (tests/local dev) uses LIKE.
     """
     _get_ready_repository(org_id, repository_id, db)
 
-    params: dict = {
-        "repo_id": repository_id,
-        "org_id": org_id,
-        "limit": limit,
-        "q": q,
-    }
-
-    # Try FTS first; fall back to ILIKE if search_vector column not found
-    try:
-        sql = """
-            SELECT
-                id, symbol_name, qualified_name, symbol_type, file_path,
-                start_line, end_line, language, is_async, is_exported, signature
-            FROM code_symbols
-            WHERE
-                organization_id = :org_id
-                AND repository_id = :repo_id
-                {type_filter}
-                {lang_filter}
-                AND search_vector @@ plainto_tsquery('english', :q)
-            ORDER BY ts_rank(search_vector, plainto_tsquery('english', :q)) DESC
-            LIMIT :limit
-        """
-    except Exception:
-        sql = """
-            SELECT
-                id, symbol_name, qualified_name, symbol_type, file_path,
-                start_line, end_line, language, is_async, is_exported, signature
-            FROM code_symbols
-            WHERE
-                organization_id = :org_id
-                AND repository_id = :repo_id
-                {type_filter}
-                {lang_filter}
-                AND (symbol_name ILIKE :q_ilike OR qualified_name ILIKE :q_ilike)
-            LIMIT :limit
-        """
-        params["q_ilike"] = f"%{q}%"
-
-    type_filter = "AND symbol_type = :symbol_type" if symbol_type else ""
-    lang_filter = "AND language = :language" if language else ""
-
-    if symbol_type:
-        params["symbol_type"] = symbol_type
-    if language:
-        params["language"] = language
-
-    final_sql = sql.format(type_filter=type_filter, lang_filter=lang_filter)
-
-    rows = db.execute(text(final_sql), params).fetchall()
+    rows = _search_symbol_rows(
+        db,
+        org_id=org_id,
+        repository_id=repository_id,
+        query=q,
+        symbol_type=symbol_type,
+        language=language,
+        limit=limit,
+    )
     return [SymbolSummary(**dict(r._mapping)) for r in rows]
 
 
@@ -622,6 +710,9 @@ def get_index_status(
     return IndexStatus(
         repository_id=repository_id,
         status=repo.status,
+        repo_map_ready=repo.repo_map_ready,
+        chat_ready=repo.chat_ready,
+        index_ready=repo.index_ready,
         total_files=fm.get("total_files", 0) or 0,
         indexed_files=fm.get("indexed_files", 0) or 0,
         failed_files=fm.get("failed_files", 0) or 0,
@@ -633,3 +724,59 @@ def get_index_status(
             repo.last_synced_at.isoformat() if repo.last_synced_at else None
         ),
     )
+
+
+# ── 10. Repository Map ────────────────────────────────────────────────────────
+
+@router.get(
+    "/organizations/{org_id}/repositories/{repository_id}/repo-map",
+    response_model=RepoMapResponse,
+    summary="Get the structural repository map (file tree, symbols, routes, docs)",
+)
+def get_repo_map(
+    org_id: int,
+    repository_id: int,
+    user_id: int = Depends(get_org_membership),
+    db: Session = Depends(get_db),
+) -> RepoMapResponse:
+    repo = _get_ready_repository(org_id, repository_id, db)
+
+    from app.models.repo_map import RepositoryMap
+    map_record = (
+        db.query(RepositoryMap)
+        .filter(
+            RepositoryMap.organization_id == org_id,
+            RepositoryMap.repository_id == repository_id,
+        )
+        .first()
+    )
+    if map_record:
+        return RepoMapResponse(
+            repository_id=repository_id,
+            organization_id=org_id,
+            commit_sha=map_record.commit_sha,
+            file_tree=map_record.file_tree,
+            languages=map_record.languages,
+            symbols_summary=map_record.symbols_summary,
+            imports=map_record.imports,
+            routes=map_record.routes,
+            test_files=map_record.test_files,
+            doc_files=map_record.doc_files,
+            raw_markdown=map_record.raw_markdown,
+        )
+
+    # Lightweight fallback if no dedicated map record was generated yet
+    return RepoMapResponse(
+        repository_id=repository_id,
+        organization_id=org_id,
+        commit_sha=None,
+        file_tree=[],
+        languages={},
+        symbols_summary=[],
+        imports=[],
+        routes=[],
+        test_files=[],
+        doc_files=[],
+        raw_markdown=f"# Repository Map: {repo.full_name}\nStatus: {repo.status}",
+    )
+

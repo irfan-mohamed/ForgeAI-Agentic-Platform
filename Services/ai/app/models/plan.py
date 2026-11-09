@@ -20,6 +20,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
+    JSON,
     String,
     Text,
     func,
@@ -28,6 +29,9 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+
+_JSON_TYPE = JSON().with_variant(JSONB, "postgresql")
+
 
 
 class ImplementationPlan(Base):
@@ -72,10 +76,10 @@ class ImplementationPlan(Base):
 
     # Structured plan: { title, summary, tasks: [...], affected_files: [...],
     #                    estimated_complexity, base_commit_sha }
-    plan_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    plan_data: Mapped[dict | None] = mapped_column(_JSON_TYPE, nullable=True)
 
     # Investigation context gathered during planning (for debugging / transparency)
-    investigation_context: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    investigation_context: Mapped[dict | None] = mapped_column(_JSON_TYPE, nullable=True)
 
     # Status lifecycle
     status: Mapped[str] = mapped_column(

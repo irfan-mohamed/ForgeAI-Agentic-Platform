@@ -91,6 +91,10 @@ class Repository(Base):
     visibility: Mapped[str] = mapped_column(String(20), nullable=False)
     default_branch: Mapped[str] = mapped_column(String(255), nullable=False)
     status: Mapped[str] = mapped_column(String(30), nullable=False)
+    # Readiness checkpoints written by the worker pipeline.
+    repo_map_ready_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    chat_ready_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    index_ready_at: Mapped[datetime | None] = mapped_column(nullable=True)
     last_synced_at: Mapped[datetime | None] = mapped_column(nullable=True)
     created_at: Mapped[datetime] = mapped_column(nullable=False)
     updated_at: Mapped[datetime] = mapped_column(nullable=False)

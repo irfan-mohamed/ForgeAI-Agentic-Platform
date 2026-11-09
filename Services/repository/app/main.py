@@ -40,8 +40,41 @@ async def lifespan(application: FastAPI):
         extra={"version": "0.1.0", "port": 8001},
     )
     Base.metadata.create_all(bind=engine)
+    _ensure_readiness_columns(engine)
     yield
     logger.info("ForgeAI Repository Service shutting down")
+
+
+def _ensure_readiness_columns(engine) -> None:
+    """
+    Adds the readiness checkpoint columns to an existing ``repositories`` table.
+
+    ``Base.metadata.create_all`` only creates missing tables — it never alters
+    an existing one. We keep this hand-rolled (rather than adding Alembic) to
+    match the rest of the deployment, and make it idempotent so every startup
+    can run it safely. Only PostgreSQL is migrated; SQLite test databases are
+    created from the current model and already have the columns.
+    """
+    if engine.dialect.name != "postgresql":
+        return
+
+    from sqlalchemy import text
+
+    statements = (
+        "ALTER TABLE repositories ADD COLUMN IF NOT EXISTS repo_map_ready_at TIMESTAMPTZ",
+        "ALTER TABLE repositories ADD COLUMN IF NOT EXISTS chat_ready_at TIMESTAMPTZ",
+        "ALTER TABLE repositories ADD COLUMN IF NOT EXISTS index_ready_at TIMESTAMPTZ",
+    )
+    try:
+        with engine.begin() as conn:
+            for statement in statements:
+                conn.execute(text(statement))
+        logger.info("Repository readiness columns verified")
+    except Exception as exc:  # pragma: no cover - depends on live PostgreSQL
+        logger.warning(
+            "Could not add repository readiness columns",
+            extra={"error": str(exc)},
+        )
 
 
 # ── App ────────────────────────────────────────────────────────────────────────

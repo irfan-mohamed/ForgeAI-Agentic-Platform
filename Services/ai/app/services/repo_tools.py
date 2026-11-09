@@ -330,3 +330,20 @@ def semantic_search(
         }
         for r in results
     ]
+
+
+# ── Tool 11: Get Repository Map ───────────────────────────────────────────────
+
+def get_repo_map(org_id: int, repository_id: int) -> dict:
+    """
+    Get the structural repository map: file tree, language breakdown, key symbols,
+    HTTP routes, test files, documentation, and formatted overview markdown.
+
+    Use this on connect or for broad repository architecture questions before
+    diving into file-level searches.
+    """
+    result = _repo_get(
+        f"/internal/organizations/{org_id}/repositories/{repository_id}/repo-map"
+    )
+    return result if isinstance(result, dict) else {}
+

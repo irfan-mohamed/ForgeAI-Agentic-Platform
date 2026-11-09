@@ -20,6 +20,8 @@ from app.models.repository_file import RepositoryFile      # noqa: F401
 from app.models.repository_knowledge import RepositoryKnowledge  # noqa: F401
 from app.models.code_symbol import CodeSymbol                    # noqa: F401
 from app.models.code_relationship import CodeRelationship        # noqa: F401
+from app.models.repo_map import RepositoryMap                    # noqa: F401
+
 
 # These are read-only mirror models — we define them here so SQLAlchemy
 # can query them without an inter-service HTTP call.

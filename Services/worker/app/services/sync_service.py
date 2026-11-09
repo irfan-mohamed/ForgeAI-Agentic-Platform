@@ -8,12 +8,20 @@ This is the brain of the Worker Service. It coordinates:
   4. Discovering all files in the clone
   5. Classifying files (index? skip? language?)
   6. Change detection (checksum comparison to skip unchanged files)
-  7. Chunking each indexable file intelligently by structure
-  8. Generating embeddings in batches
-  9. Upserting vectors into Qdrant
-  10. Recording knowledge metadata in PostgreSQL
-  11. Cleaning up the local clone
-  12. Marking sync as COMPLETED and repository as READY
+  7. MAP phase: chunking by structure, symbol extraction, relationship
+     resolution, and PostgreSQL FTS rows — this makes the repo chat-ready
+  8. INDEX phase: generating embeddings in batches and upserting vectors
+  9. Recording knowledge metadata in PostgreSQL
+  10. Cleaning up the local clone
+  11. Marking sync as COMPLETED and repository as READY
+
+The MAP and INDEX phases are distinct so a repository becomes usable for
+chat/structural questions before the (slower) embedding pass finishes.
+
+Readiness checkpoints written to the repository row:
+  - repo_map_ready_at — file inventory + symbol graph + lexical index done
+  - chat_ready_at     — chat endpoints may be used
+  - index_ready_at    — every changed file embedded and upserted
 
 On any failure:
   - The sync is marked FAILED with the error message.
@@ -29,6 +37,7 @@ import logging
 import os
 import shutil
 import tempfile
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -57,6 +66,19 @@ logger = logging.getLogger(__name__)
 
 # How many chunks to embed and upsert in one batch
 EMBED_BATCH_SIZE = 50
+
+
+@dataclass
+class MappedFile:
+    """A file that passed classification and chunking during the map phase."""
+
+    file_path: str
+    file_abs_path: str
+    language: str | None
+    file_type: str
+    checksum: str
+    file_record_id: int
+    chunk_count: int
 
 
 class SyncService:
@@ -163,24 +185,30 @@ class SyncService:
                     repo_record.updated_at = datetime.now(timezone.utc)
                     db.commit()
 
-            # ── Phase 7: Process files ─────────────────────────────────────────
-            files_processed = 0
+            # ── Phase 7: MAP — build the repo map and symbol graph ────────────
+            # Deliberately does NOT embed anything. Produces the file
+            # inventory, extracted symbols, relationships, and FTS rows —
+            # enough to make the repository chat-ready.
             files_failed = 0
+            files_skipped = 0
+            mapped_files: list[MappedFile] = []
 
             for file_path, file_abs_path in all_files:
                 try:
-                    processed = self._process_file(
+                    mapped = self._map_file(
                         db_organization_id=organization_id,
                         repository_id=repository_id,
                         file_path=file_path,
                         file_abs_path=file_abs_path,
                         commit_sha=commit_sha,
                     )
-                    if processed:
-                        files_processed += 1
+                    if mapped is not None:
+                        mapped_files.append(mapped)
+                    else:
+                        files_skipped += 1
                 except Exception as exc:
                     logger.warning(
-                        "File processing failed — skipping",
+                        "File mapping failed — skipping",
                         extra={
                             "file_path": file_path,
                             "error": str(exc),
@@ -194,24 +222,18 @@ class SyncService:
                         error=str(exc),
                     )
 
-                # Update progress counters periodically (every 10 files)
-                if (files_processed + files_failed) % 10 == 0:
+                # Update progress counters periodically (every 25 files)
+                if (len(mapped_files) + files_skipped + files_failed) % 25 == 0:
                     self._update_progress(
                         sync_id=sync_id,
                         files_discovered=total_discovered,
-                        files_processed=files_processed,
+                        files_processed=len(mapped_files),
                         files_failed=files_failed,
                     )
 
-            # ── Phase 8: Mark repository as INDEXING ───────────────────────────
-            with get_db_session() as db:
-                repo_record = db.get(Repository, repository_id)
-                if repo_record:
-                    repo_record.status = RepositoryStatus.INDEXING.value
-                    repo_record.updated_at = datetime.now(timezone.utc)
-                    db.commit()
+            files_processed = len(mapped_files)
 
-            # ── Phase 8.5: Cross-file relationship resolution ──────────────────
+            # ── Phase 7.5: Cross-file relationship resolution ─────────────────
             # All files have been symbol-extracted — now resolve cross-file
             # IMPORTS and CALLS to their actual target symbol IDs.
             logger.info(
@@ -235,12 +257,87 @@ class SyncService:
                     extra={"sync_id": sync_id, "error": str(exc)},
                 )
 
-            # ── Phase 9: Mark sync COMPLETED, repo READY ───────────────────────
+            # ── Phase 8: Repo map ready → enable chat ─────────────────────────
+            # Chat and structural questions can be served now; semantic vector
+            # search will return partial/empty results until Phase 9 finishes.
+            # Build and persist the full repository map (file tree, languages,
+            # symbols, routes, imports, test files, docs) in PostgreSQL.
+            try:
+                from app.services.repo_map_builder import build_repo_map
+                with get_db_session() as db:
+                    build_repo_map(
+                        db=db,
+                        organization_id=organization_id,
+                        repository_id=repository_id,
+                        commit_sha=commit_sha,
+                        repo_name=full_name,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Repository map generation failed (non-fatal)",
+                    extra={"sync_id": sync_id, "error": str(exc)},
+                )
+
+            map_ready_at = datetime.now(timezone.utc)
+            with get_db_session() as db:
+                repo_record = db.get(Repository, repository_id)
+                if repo_record:
+                    repo_record.status = RepositoryStatus.INDEXING.value
+                    repo_record.repo_map_ready_at = map_ready_at
+                    repo_record.chat_ready_at = map_ready_at
+                    repo_record.updated_at = map_ready_at
+                    db.commit()
+
+            logger.info(
+                "Repository map ready — chat enabled",
+                extra={
+                    "sync_id": sync_id,
+                    "repo_id": repository_id,
+                    "mapped_files": files_processed,
+                    "skipped_files": files_skipped,
+                },
+            )
+
+            # ── Phase 9: INDEX — embed chunks and upsert vectors ──────────────
+            files_indexed = 0
+            for position, mapped in enumerate(mapped_files, start=1):
+                try:
+                    self._index_file(
+                        organization_id=organization_id,
+                        repository_id=repository_id,
+                        mapped=mapped,
+                        commit_sha=commit_sha,
+                    )
+                    files_indexed += 1
+                except Exception as exc:
+                    logger.warning(
+                        "File indexing failed — skipping",
+                        extra={"file_path": mapped.file_path, "error": str(exc)},
+                    )
+                    files_failed += 1
+                    self._mark_file_failed(
+                        organization_id=organization_id,
+                        repository_id=repository_id,
+                        file_path=mapped.file_path,
+                        error=str(exc),
+                    )
+
+                # Update progress counters periodically (every 10 files)
+                if position % 10 == 0:
+                    self._update_progress(
+                        sync_id=sync_id,
+                        files_discovered=total_discovered,
+                        files_processed=files_processed,
+                        files_failed=files_failed,
+                    )
+
+            # ── Phase 10: Mark sync COMPLETED, repo READY ─────────────────────
+            completed_at = datetime.now(timezone.utc)
             with get_db_session() as db:
                 sync_record = db.get(RepositorySync, sync_id)
                 if sync_record:
                     sync_record.status = SyncStatus.COMPLETED.value
-                    sync_record.completed_at = datetime.now(timezone.utc)
+                    sync_record.completed_at = completed_at
                     sync_record.files_discovered = total_discovered
                     sync_record.files_processed = files_processed
                     sync_record.files_failed = files_failed
@@ -249,8 +346,15 @@ class SyncService:
                 repo_record = db.get(Repository, repository_id)
                 if repo_record:
                     repo_record.status = RepositoryStatus.READY.value
-                    repo_record.last_synced_at = datetime.now(timezone.utc)
-                    repo_record.updated_at = datetime.now(timezone.utc)
+                    repo_record.repo_map_ready_at = (
+                        repo_record.repo_map_ready_at or map_ready_at
+                    )
+                    repo_record.chat_ready_at = (
+                        repo_record.chat_ready_at or map_ready_at
+                    )
+                    repo_record.index_ready_at = completed_at
+                    repo_record.last_synced_at = completed_at
+                    repo_record.updated_at = completed_at
                     db.commit()
 
             logger.info(
@@ -259,6 +363,7 @@ class SyncService:
                     "sync_id": sync_id,
                     "repo_id": repository_id,
                     "files_processed": files_processed,
+                    "files_indexed": files_indexed,
                     "files_failed": files_failed,
                 },
             )
@@ -388,19 +493,21 @@ class SyncService:
 
         return files
 
-    def _process_file(
+    def _map_file(
         self,
         db_organization_id: int,
         repository_id: int,
         file_path: str,
         file_abs_path: str,
         commit_sha: str | None,
-    ) -> bool:
+    ) -> MappedFile | None:
         """
-        Processes a single file through the full pipeline:
-          classify → change detect → chunk → embed → store
+        Map phase for a single file:
+          classify → change detect → chunk → symbol extraction
 
-        Returns True if the file was indexed, False if it was skipped.
+        Does NOT embed or write vectors. Returns a ``MappedFile`` when the file
+        still needs to be embedded in the index phase, or ``None`` when it was
+        skipped (ignored, binary, empty, or unchanged since the last sync).
         """
         # ── Step 1: Get file size ─────────────────────────────────────────────
         try:
@@ -426,7 +533,7 @@ class SyncService:
                 skip_reason=classification.skip_reason,
                 chunk_count=0,
             )
-            return False
+            return None
 
         # ── Step 3: Read file content ─────────────────────────────────────────
         try:
@@ -451,7 +558,7 @@ class SyncService:
                 skip_reason="binary file",
                 chunk_count=0,
             )
-            return False
+            return None
 
         # Decode to text
         try:
@@ -484,7 +591,7 @@ class SyncService:
                 "File unchanged — skipping re-embed",
                 extra={"file_path": file_path},
             )
-            return False
+            return None
 
         # ── Step 5: Delete old vectors if file changed ────────────────────────
         if existing_file and existing_file.is_indexed:
@@ -523,7 +630,7 @@ class SyncService:
                 skip_reason="no chunks generated",
                 chunk_count=0,
             )
-            return False
+            return None
 
         # ── Step 7: Upsert file record (DISCOVERED status) ────────────────────
         file_record = self._upsert_file_record(
@@ -541,7 +648,84 @@ class SyncService:
             chunk_count=len(chunks),
         )
 
-        # ── Step 8: Embed chunks in batches ───────────────────────────────────
+        # ── Step 8: Extract code symbols and relationships ────────────────────
+        if symbol_extractor.is_supported(classification.language):
+            self._extract_and_store_symbols(
+                content=content,
+                file_path=file_path,
+                language=classification.language,
+                organization_id=db_organization_id,
+                repository_id=repository_id,
+                repository_file_id=file_record.id,
+                commit_sha=commit_sha,
+            )
+
+        return MappedFile(
+            file_path=file_path,
+            file_abs_path=file_abs_path,
+            language=classification.language,
+            file_type=classification.file_type,
+            checksum=new_checksum,
+            file_record_id=file_record.id,
+            chunk_count=len(chunks),
+        )
+
+    def _index_file(
+        self,
+        organization_id: int,
+        repository_id: int,
+        mapped: MappedFile,
+        commit_sha: str | None,
+    ) -> bool:
+        """
+        Index phase for one mapped file: re-read, chunk, embed, upsert vectors,
+        and persist knowledge metadata. Symbols were already extracted during
+        the map phase.
+        """
+        try:
+            with open(mapped.file_abs_path, "rb") as f:
+                raw_bytes = f.read()
+        except (OSError, PermissionError) as exc:
+            raise RuntimeError(f"Cannot read file: {exc}")
+
+        try:
+            content = raw_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            try:
+                import chardet
+                detected = chardet.detect(raw_bytes)
+                encoding = detected.get("encoding") or "latin-1"
+                content = raw_bytes.decode(encoding, errors="replace")
+            except Exception:
+                content = raw_bytes.decode("latin-1", errors="replace")
+
+        chunks = chunk_file(
+            content=content,
+            file_path=mapped.file_path,
+            language=mapped.language,
+            file_type=mapped.file_type,
+            max_tokens=settings.CHUNK_MAX_TOKENS,
+            overlap_tokens=settings.CHUNK_OVERLAP_TOKENS,
+        )
+
+        if not chunks:
+            self._upsert_file_record(
+                organization_id=organization_id,
+                repository_id=repository_id,
+                file_path=mapped.file_path,
+                language=mapped.language,
+                file_type=mapped.file_type,
+                size_bytes=os.path.getsize(mapped.file_abs_path),
+                checksum=mapped.checksum,
+                commit_sha=commit_sha,
+                is_indexed=False,
+                status=FileStatus.SKIPPED.value,
+                skip_reason="no chunks generated",
+                chunk_count=0,
+            )
+            return False
+
+        # ── Embed chunks in batches ───────────────────────────────────────────
         chunk_texts = [c.content for c in chunks]
         embeddings = embedder.embed_texts(chunk_texts)
 
@@ -553,16 +737,16 @@ class SyncService:
         logger.info(
             "Embeddings generated for file chunks",
             extra={
-                "org_id": db_organization_id,
+                "org_id": organization_id,
                 "repo_id": repository_id,
-                "file_path": file_path,
+                "file_path": mapped.file_path,
                 "chunks_count": len(chunks),
                 "embeddings_count": len(embeddings),
                 "embedding_model": embedder.get_model_name(),
             },
         )
 
-        # ── Step 9: Upsert vectors + create knowledge records ─────────────────
+        # ── Upsert vectors + create knowledge records ─────────────────────────
         vector_points: list[dict] = []
         knowledge_records: list[RepositoryKnowledge] = []
 
@@ -573,12 +757,12 @@ class SyncService:
                 "id": vec_id,
                 "vector": embedding,
                 "payload": {
-                    "organization_id": db_organization_id,
+                    "organization_id": organization_id,
                     "repository_id": repository_id,
-                    "repository_file_id": file_record.id,
-                    "file_path": file_path,
+                    "repository_file_id": mapped.file_record_id,
+                    "file_path": mapped.file_path,
                     "commit_sha": commit_sha,
-                    "language": classification.language,
+                    "language": mapped.language,
                     "chunk_type": chunk.chunk_type,
                     "chunk_name": chunk.chunk_name,
                     "chunk_index": chunk.chunk_index,
@@ -591,12 +775,12 @@ class SyncService:
             })
 
             knowledge_records.append(RepositoryKnowledge(
-                organization_id=db_organization_id,
+                organization_id=organization_id,
                 repository_id=repository_id,
-                repository_file_id=file_record.id,
-                file_path=file_path,
+                repository_file_id=mapped.file_record_id,
+                file_path=mapped.file_path,
                 commit_sha=commit_sha,
-                language=classification.language,
+                language=mapped.language,
                 chunk_type=chunk.chunk_type,
                 chunk_name=chunk.chunk_name,
                 chunk_index=chunk.chunk_index,
@@ -614,9 +798,9 @@ class SyncService:
         logger.info(
             "Qdrant points inserted for file",
             extra={
-                "org_id": db_organization_id,
+                "org_id": organization_id,
                 "repo_id": repository_id,
-                "file_path": file_path,
+                "file_path": mapped.file_path,
                 "points_inserted": len(vector_points),
                 "collection": settings.QDRANT_COLLECTION_NAME,
             },
@@ -628,35 +812,48 @@ class SyncService:
                 db.add(record)
             db.commit()
 
-        # ── Step 10: Extract code symbols and relationships ────────────────────
-        if symbol_extractor.is_supported(classification.language):
-            self._extract_and_store_symbols(
-                content=content,
-                file_path=file_path,
-                language=classification.language,
-                organization_id=db_organization_id,
-                repository_id=repository_id,
-                repository_file_id=file_record.id,
-                commit_sha=commit_sha,
-            )
-
         # Mark file as INDEXED
         self._mark_file_indexed(
-            organization_id=db_organization_id,
+            organization_id=organization_id,
             repository_id=repository_id,
-            file_path=file_path,
+            file_path=mapped.file_path,
             chunk_count=len(chunks),
         )
 
         logger.debug(
             "File indexed successfully",
             extra={
-                "file_path": file_path,
+                "file_path": mapped.file_path,
                 "chunks": len(chunks),
-                "language": classification.language,
+                "language": mapped.language,
             },
         )
         return True
+
+    def _process_file(
+        self,
+        db_organization_id: int,
+        repository_id: int,
+        file_path: str,
+        file_abs_path: str,
+        commit_sha: str | None,
+    ) -> bool:
+        """Compatibility wrapper: map then index a single file in one call."""
+        mapped = self._map_file(
+            db_organization_id=db_organization_id,
+            repository_id=repository_id,
+            file_path=file_path,
+            file_abs_path=file_abs_path,
+            commit_sha=commit_sha,
+        )
+        if mapped is None:
+            return False
+        return self._index_file(
+            organization_id=db_organization_id,
+            repository_id=repository_id,
+            mapped=mapped,
+            commit_sha=commit_sha,
+        )
 
     # ── DB helpers ─────────────────────────────────────────────────────────────
 

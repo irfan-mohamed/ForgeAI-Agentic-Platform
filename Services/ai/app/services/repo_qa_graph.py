@@ -104,8 +104,9 @@ def _select_tools_for_intent(intent_str: str, named_symbols: list[str]) -> list[
         return ["search_symbols", "get_callees"]
     if intent_str == "ROUTE_SEARCH":
         return ["list_routes", "search_symbols"]
-    # Default: semantic + broad structural
-    return ["semantic_search", "get_file_structure"]
+    # Default: repo map + semantic + broad structural
+    return ["get_repo_map", "semantic_search", "get_file_structure"]
+
 
 
 def _format_evidence(evidence: list[dict]) -> str:
@@ -148,6 +149,12 @@ def _format_evidence(evidence: list[dict]) -> str:
             parts.append(
                 f"- {item.get('path')} ({item.get('language') or 'unknown'})"
             )
+        elif source == "get_repo_map":
+            raw_md = item.get("raw_markdown")
+            if raw_md:
+                parts.append(f"### Repository Map\n{raw_md}")
+            else:
+                parts.append(f"### Repository Map\nFiles: {len(item.get('file_tree') or [])}")
         else:
             # Generic fallback
             parts.append(json.dumps(item, indent=2)[:500])
@@ -197,7 +204,7 @@ def execute_tools_node(state: RepoQAState) -> dict:
     """Executes the selected tools and accumulates evidence."""
     from app.services.repo_tools import (  # lazy
         get_callers, get_callees, get_file_structure,
-        get_references, get_symbol_by_name, list_routes,
+        get_references, get_repo_map, get_symbol_by_name, list_routes,
         search_symbols, semantic_search,
     )
     org_id = state["org_id"]
@@ -208,7 +215,12 @@ def execute_tools_node(state: RepoQAState) -> dict:
 
     for tool_name in state.get("tools_to_run", []):
         try:
-            if tool_name == "semantic_search":
+            if tool_name == "get_repo_map":
+                result = get_repo_map(org_id, repo_id)
+                if result:
+                    new_evidence.append({**result, "_source": "get_repo_map"})
+
+            elif tool_name == "semantic_search":
                 results = semantic_search(question, org_id, repo_id)
                 for r in results:
                     new_evidence.append({**r, "_source": "semantic_search"})
