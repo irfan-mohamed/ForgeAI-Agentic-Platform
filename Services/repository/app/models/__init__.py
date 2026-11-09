@@ -4,3 +4,5 @@
 from app.models.github_installation import GitHubInstallation  # noqa: F401
 from app.models.repository import Repository                    # noqa: F401
 from app.models.repository_sync import RepositorySync          # noqa: F401
+from app.models.repo_map import RepositoryMap                  # noqa: F401
+

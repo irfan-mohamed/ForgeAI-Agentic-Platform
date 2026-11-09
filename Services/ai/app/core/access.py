@@ -37,6 +37,11 @@ class RepoInfo:
     full_name: str
     status: str
     default_branch: str
+    # Readiness checkpoints. Older rows predate these columns; a repository
+    # with status "ready" is treated as ready on all three dimensions.
+    repo_map_ready: bool = False
+    chat_ready: bool = False
+    index_ready: bool = False
 
 
 def parse_id(value: object, label: str = "id") -> int:
@@ -88,12 +93,16 @@ def get_repository(
     Raises 404 for repositories that do not exist, belong to another
     organization, or were disconnected / lost GitHub access (404 rather than
     403 so repository IDs of other tenants are not revealed).
-    Raises 409 when ``require_ready`` is set and indexing has not finished.
+    Raises 409 when ``require_ready`` is set and the repository is not
+    chat-ready yet.
+
+    ``SELECT *`` is intentional: the readiness timestamp columns may not exist
+    in older deployments or lightweight test schemas. Missing fields simply
+    fall back to the legacy ``status == "ready"`` compatibility rule.
     """
     row = db.execute(
         text(
-            "SELECT id, organization_id, name, full_name, status, default_branch "
-            "FROM repositories "
+            "SELECT * FROM repositories "
             "WHERE id = :repository_id AND organization_id = :org_id"
         ),
         {"repository_id": repository_id, "org_id": org_id},
@@ -106,12 +115,23 @@ def get_repository(
         )
 
     data = row._mapping
-    if require_ready and data["status"] != "ready":
+    status_value = data["status"]
+
+    def _ready(field_name: str) -> bool:
+        # Legacy rows only have status == "ready".
+        timestamp = data.get(field_name) if hasattr(data, "get") else None
+        return timestamp is not None or status_value == "ready"
+
+    repo_map_ready = _ready("repo_map_ready_at")
+    chat_ready = _ready("chat_ready_at")
+    index_ready = _ready("index_ready_at")
+
+    if require_ready and not chat_ready:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
                 "This repository is not ready yet "
-                f"(status: {data['status']}). Wait for indexing to finish."
+                f"(not ready for chat, status: {status_value}). Wait for the repository map to finish."
             ),
         )
 
@@ -120,8 +140,11 @@ def get_repository(
         organization_id=data["organization_id"],
         name=data["name"],
         full_name=data["full_name"],
-        status=data["status"],
+        status=status_value,
         default_branch=data["default_branch"],
+        repo_map_ready=repo_map_ready,
+        chat_ready=chat_ready,
+        index_ready=index_ready,
     )
 
 

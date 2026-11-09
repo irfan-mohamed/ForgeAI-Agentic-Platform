@@ -20,10 +20,12 @@ Thread safety: all operations are stateless; safe to call from multiple threads.
 from __future__ import annotations
 
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 
 from sqlalchemy import text
+
 
 from app.core.config import settings
 from app.db.database import db_session
@@ -88,7 +90,42 @@ def reciprocal_rank_fusion(
     return scores
 
 
-# ── Symbol search (PostgreSQL FTS) ────────────────────────────────────────────
+# ── Symbol search (PostgreSQL FTS + Code Identifier Ranking) ──────────────────
+
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+_IDENTIFIER_TOKEN = re.compile(r"[A-Za-z0-9_]+")
+
+
+def expand_code_query_tokens(query: str) -> list[str]:
+    """
+    Expands a query into code identifier tokens with camelCase and snake_case splitting.
+    "UserService.login" -> ["userservice", "login", "user", "service"]
+    "get_user_by_id"    -> ["get_user_by_id", "get", "user", "by", "id"]
+    """
+    tokens: list[str] = []
+    for raw in _IDENTIFIER_TOKEN.findall(query):
+        tokens.append(raw)
+        for part in raw.replace("_", " ").split():
+            tokens.append(part)
+            tokens.extend(_CAMEL_BOUNDARY.split(part))
+    seen: set[str] = set()
+    result: list[str] = []
+    for token in tokens:
+        token = token.strip().lower()
+        if len(token) < 2 or token in seen:
+            continue
+        seen.add(token)
+        result.append(token)
+    return result
+
+
+def build_code_tsquery(query: str) -> str:
+    """Builds an OR tsquery for PostgreSQL simple text search configuration."""
+    tokens = expand_code_query_tokens(query)
+    # Sanitize each token so it's a valid tsquery word
+    safe_tokens = [t for t in tokens if t.isalnum() or "_" in t]
+    return " | ".join(safe_tokens) if safe_tokens else ""
+
 
 def _search_symbols_lexical(
     query: str,
@@ -97,15 +134,25 @@ def _search_symbols_lexical(
     limit: int = 20,
 ) -> list[tuple[str, float, dict]]:
     """
-    Searches code_symbols using PostgreSQL full-text search.
+    Searches code_symbols using PostgreSQL full-text search with simple configuration,
+    camelCase/snake_case token expansion, exact & prefix boosts, and ILIKE/trigram fallback.
+    Falls back gracefully to LIKE matching on SQLite during testing.
 
     Returns: [(synthetic_id, rank_score, symbol_row_dict), ...]
     """
     results = []
+    clean_query = query.strip()
+    like_query = f"%{clean_query}%"
+    prefix_query = f"{clean_query}%"
+
     try:
         with db_session() as db:
-            rows = db.execute(
-                text("""
+            dialect = db.get_bind().dialect.name
+
+            if dialect == "postgresql":
+                tsquery = build_code_tsquery(query)
+                tsquery_val = tsquery or "forgeaiemptyquery"
+                sql = """
                     SELECT
                         id,
                         symbol_name,
@@ -117,22 +164,79 @@ def _search_symbols_lexical(
                         signature,
                         docstring,
                         language,
-                        ts_rank(search_vector, plainto_tsquery('english', :query)) AS rank
+                        (
+                            (CASE WHEN LOWER(symbol_name) = LOWER(:clean_query) THEN 100.0 ELSE 0.0 END) +
+                            (CASE WHEN symbol_name ILIKE :prefix_query THEN 30.0 ELSE 0.0 END) +
+                            (CASE WHEN symbol_name ILIKE :like_query THEN 15.0 ELSE 0.0 END) +
+                            (CASE WHEN qualified_name ILIKE :like_query THEN 10.0 ELSE 0.0 END) +
+                            (CASE WHEN search_vector IS NOT NULL AND search_vector @@ to_tsquery('simple', :tsquery)
+                                  THEN ts_rank(search_vector, to_tsquery('simple', :tsquery)) * 10.0
+                                  ELSE 0.0 END)
+                        ) AS rank
                     FROM code_symbols
                     WHERE
                         organization_id = :org_id
                         AND repository_id = :repo_id
-                        AND search_vector @@ plainto_tsquery('english', :query)
-                    ORDER BY rank DESC
+                        AND (
+                            (search_vector IS NOT NULL AND search_vector @@ to_tsquery('simple', :tsquery))
+                            OR symbol_name ILIKE :like_query
+                            OR qualified_name ILIKE :like_query
+                        )
+                    ORDER BY rank DESC, symbol_name ASC
                     LIMIT :limit
-                """),
-                {
-                    "query": query,
+                """
+                params = {
+                    "tsquery": tsquery_val,
+                    "clean_query": clean_query,
+                    "like_query": like_query,
+                    "prefix_query": prefix_query,
                     "org_id": org_id,
                     "repo_id": repository_id,
                     "limit": limit,
-                },
-            ).fetchall()
+                }
+            else:
+                # SQLite test / fallback query
+                sql = """
+                    SELECT
+                        id,
+                        symbol_name,
+                        qualified_name,
+                        symbol_type,
+                        file_path,
+                        start_line,
+                        end_line,
+                        signature,
+                        docstring,
+                        language,
+                        (
+                            CASE WHEN LOWER(symbol_name) = LOWER(:clean_query) THEN 100.0
+                                 WHEN symbol_name LIKE :prefix_query THEN 30.0
+                                 WHEN symbol_name LIKE :like_query THEN 15.0
+                                 WHEN qualified_name LIKE :like_query THEN 10.0
+                                 ELSE 1.0 END
+                        ) AS rank
+                    FROM code_symbols
+                    WHERE
+                        organization_id = :org_id
+                        AND repository_id = :repo_id
+                        AND (
+                            symbol_name LIKE :like_query
+                            OR qualified_name LIKE :like_query
+                            OR signature LIKE :like_query
+                        )
+                    ORDER BY rank DESC, symbol_name ASC
+                    LIMIT :limit
+                """
+                params = {
+                    "clean_query": clean_query,
+                    "like_query": like_query,
+                    "prefix_query": prefix_query,
+                    "org_id": org_id,
+                    "repo_id": repository_id,
+                    "limit": limit,
+                }
+
+            rows = db.execute(text(sql), params).fetchall()
 
         for row in rows:
             m = row._mapping
@@ -146,6 +250,7 @@ def _search_symbols_lexical(
         )
 
     return results
+
 
 
 def _symbol_to_hybrid_result(sym_id: str, sym: dict, rrf_score: float) -> HybridResult:
@@ -303,6 +408,17 @@ def search(
             r = _symbol_to_hybrid_result(sym_id, sym_data, rrf_scores.get(sym_id, 0.0))
             result_map[sym_id] = r
 
-    # Sort by RRF score, return top_k
+    # Sort by RRF score and form candidate pool for reranker
     sorted_results = sorted(result_map.values(), key=lambda r: r.rrf_score, reverse=True)
-    return sorted_results[:top_k]
+    candidate_pool_size = getattr(settings, "RAG_CANDIDATE_POOL_SIZE", 30)
+    candidate_pool = sorted_results[:candidate_pool_size]
+
+    if getattr(settings, "RAG_RERANK_ENABLED", True) and candidate_pool:
+        try:
+            from app.services.reranker import rerank
+            return rerank(query=query, candidates=candidate_pool, top_k=top_k)
+        except Exception as exc:
+            logger.warning("Reranking step failed, falling back to raw RRF order", extra={"error": str(exc)})
+
+    return candidate_pool[:top_k]
+

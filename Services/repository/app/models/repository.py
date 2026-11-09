@@ -98,8 +98,63 @@ class Repository(Base):
         server_default=RepositoryStatus.CONNECTING.value,
     )
 
+    # ── Readiness checkpoints ─────────────────────────────────────────────────
+    # The single ``status`` column conflates several independent milestones.
+    # These timestamps let the rest of the platform answer narrower questions:
+
+    # Set once file discovery, symbol extraction, and relationship resolution
+    # have completed. The repo map, symbol graph, and lexical (FTS) search are
+    # usable from this point on.
+    repo_map_ready_at: Mapped[datetime | None] = mapped_column(nullable=True)
+
+    # Set once chat can be served. Today this is the same moment as
+    # ``repo_map_ready_at`` (symbol/lexical retrieval is enough to start a
+    # conversation); it stays a separate checkpoint because chat may later
+    # require a small semantic index slice.
+    chat_ready_at: Mapped[datetime | None] = mapped_column(nullable=True)
+
+    # Set once every indexable file has been embedded and upserted to Qdrant.
+    index_ready_at: Mapped[datetime | None] = mapped_column(nullable=True)
+
     # Timestamp of the last successfully completed sync.
     last_synced_at: Mapped[datetime | None] = mapped_column(nullable=True)
+
+    # ── Computed readiness flags ──────────────────────────────────────────────
+    # Compatibility: repositories indexed before the readiness checkpoints
+    # existed only have ``status == ready``. Treat that as fully ready.
+
+    @property
+    def repo_map_ready(self) -> bool:
+        return (
+            self.repo_map_ready_at is not None
+            or self.status == RepositoryStatus.READY.value
+        )
+
+    @property
+    def chat_ready(self) -> bool:
+        return (
+            self.chat_ready_at is not None
+            or self.status == RepositoryStatus.READY.value
+        )
+
+    @property
+    def index_ready(self) -> bool:
+        return (
+            self.index_ready_at is not None
+            or self.status == RepositoryStatus.READY.value
+        )
+
+    @property
+    def is_repo_map_ready(self) -> bool:
+        return self.repo_map_ready
+
+    @property
+    def is_chat_ready(self) -> bool:
+        return self.chat_ready
+
+    @property
+    def is_fully_indexed(self) -> bool:
+        return self.index_ready
 
     created_at: Mapped[datetime] = mapped_column(
         nullable=False,

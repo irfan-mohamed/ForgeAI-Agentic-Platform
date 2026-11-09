@@ -16,9 +16,7 @@ repository_id. Callers must pass IDs that came from
 ``app.core.access.get_repository``, never straight from a request body.
 """
 from dataclasses import dataclass
-
-from qdrant_client import QdrantClient
-from qdrant_client.http.models import FieldCondition, Filter, MatchValue
+from typing import Any
 
 from app.core.config import settings
 from app.core.logging import get_logger
@@ -27,18 +25,23 @@ from app.services import llm
 logger = get_logger(__name__)
 
 # Module-level singletons (initialized once on first call)
-_qdrant_client: QdrantClient | None = None
+_qdrant_client: Any = None
 _embed_model = None  # fastembed TextEmbedding singleton
 
 
-def _qdrant() -> QdrantClient:
+def _qdrant():
     global _qdrant_client
     if _qdrant_client is None:
+        try:
+            from qdrant_client import QdrantClient
+        except ImportError as exc:
+            raise RuntimeError("qdrant-client is not installed. Run: pip install qdrant-client") from exc
         kwargs: dict = {"url": settings.QDRANT_URL}
         if settings.QDRANT_API_KEY:
             kwargs["api_key"] = settings.QDRANT_API_KEY
         _qdrant_client = QdrantClient(**kwargs)
     return _qdrant_client
+
 
 
 @dataclass
@@ -75,22 +78,47 @@ def _get_embed_model():
 
 def embed_query(query: str) -> list[float]:
     """Embed a user question using the same fastembed model as the Worker."""
+    prefix = getattr(settings, "EMBEDDING_QUERY_PREFIX", "")
+    prepared_query = f"{prefix}{query}" if prefix and not query.startswith(prefix) else query
     model = _get_embed_model()
-    embeddings = list(model.embed([query]))
+    embeddings = list(model.embed([prepared_query]))
     return embeddings[0].tolist()
+
+
+class _FallbackMatchValue:
+    def __init__(self, value: Any):
+        self.value = value
+
+
+class _FallbackFieldCondition:
+    def __init__(self, key: str, match: _FallbackMatchValue):
+        self.key = key
+        self.match = match
+
+
+class _FallbackFilter:
+    def __init__(self, must: list[_FallbackFieldCondition]):
+        self.must = must
 
 
 def tenant_filter(
     org_id: int,
     repository_id: int,
     file_path: str | None = None,
-) -> Filter:
+) -> Any:
     """
     Builds the mandatory tenant-isolation filter.
 
     Keys and types match the Worker's payload: ``organization_id`` and
     ``repository_id`` are stored as integers.
     """
+    try:
+        from qdrant_client.http.models import FieldCondition, Filter, MatchValue
+    except ImportError:
+        FieldCondition = _FallbackFieldCondition
+        Filter = _FallbackFilter
+        MatchValue = _FallbackMatchValue
+
     must = [
         FieldCondition(key="organization_id", match=MatchValue(value=int(org_id))),
         FieldCondition(key="repository_id", match=MatchValue(value=int(repository_id))),
@@ -98,6 +126,8 @@ def tenant_filter(
     if file_path:
         must.append(FieldCondition(key="file_path", match=MatchValue(value=file_path)))
     return Filter(must=must)
+
+
 
 
 def _to_chunk(point_id, payload: dict | None, score: float) -> RetrievedChunk:
