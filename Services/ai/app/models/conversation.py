@@ -70,6 +70,11 @@ class Conversation(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, onupdate=_now)
 
+    @property
+    def organization_id(self) -> str:
+        """Alias for org_id for API consistency across services."""
+        return self.org_id
+
     # Deleting a conversation must delete its messages and runs; without the
     # cascade SQLAlchemy tries to NULL the (NOT NULL) foreign keys instead.
     messages: Mapped[list["Message"]] = relationship(
