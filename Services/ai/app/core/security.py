@@ -67,3 +67,8 @@ def get_bearer_token(
 CurrentUser = Annotated[dict, Depends(get_current_user)]
 UserId = Annotated[int, Depends(get_user_id)]
 BearerToken = Annotated[str, Depends(get_bearer_token)]
+
+
+def decode_token(token: str) -> dict:
+    """Public alias for use outside FastAPI dependency injection (e.g. SSE query-param auth)."""
+    return _decode_token(token)

@@ -63,6 +63,10 @@ export default defineConfig({
         target: 'http://localhost:8002',
         changeOrigin: true,
       },
+      '/api/v1/build-runs': {
+        target: 'http://localhost:8002',
+        changeOrigin: true,
+      },
       '/api/v1/agent-runs': {
         target: 'http://localhost:8002',
         changeOrigin: true,

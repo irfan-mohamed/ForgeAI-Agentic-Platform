@@ -5,6 +5,7 @@ import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { PageLayout, PageHeader } from '@/components/layout/PageLayout';
 import { plansApi } from '@/api/plans';
+import { buildRunsApi } from '@/api/buildRuns';
 import { aiApi } from '@/api/ai';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -26,6 +27,7 @@ export function FeaturePlansPage() {
   const [feedback, setFeedback]                 = useState('');
   const [showFeedbackModal, setShowFeedbackModal] = useState(false);
   const [actionLoading, setActionLoading]       = useState(false);
+  const [buildLoading, setBuildLoading]         = useState(false);
 
   useEffect(() => {
     if (!orgId) return;
@@ -108,6 +110,21 @@ export function FeaturePlansPage() {
       alert('Failed to submit feedback.');
     } finally {
       setActionLoading(false);
+    }
+  };
+
+  /** Trigger Phase 4 Build Execution and navigate to BuildRunPage. */
+  const handleBuild = async () => {
+    if (!currentPlan) return;
+    setBuildLoading(true);
+    try {
+      const res = await buildRunsApi.triggerBuild(currentPlan.id);
+      navigate(`/organizations/${orgId}/build-runs/${res.data.build_run_id}`);
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      alert(typeof msg === 'string' ? msg : 'Failed to trigger build run.');
+    } finally {
+      setBuildLoading(false);
     }
   };
 
@@ -324,6 +341,30 @@ export function FeaturePlansPage() {
                         Approve Plan ✓
                       </Button>
                     </div>
+                  </div>
+                )}
+
+                {/* Phase 4: Build, Test & PR */}
+                {currentPlan?.status === 'approved' && (
+                  <div className="pt-4 border-t border-white/8">
+                    <div className="flex items-start gap-3 p-3 rounded-xl bg-emerald-500/8 border border-emerald-500/20 mb-3">
+                      <span className="text-emerald-400 mt-0.5">&#10003;</span>
+                      <div>
+                        <p className="text-xs font-semibold text-emerald-300">Plan Approved</p>
+                        <p className="text-[11px] text-surface-400 mt-0.5">
+                          Ready to build, run integration tests, and auto-open a Pull Request.
+                        </p>
+                      </div>
+                    </div>
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      onClick={handleBuild}
+                      isLoading={buildLoading}
+                      className="w-full"
+                    >
+                      Build, Test &amp; Open PR
+                    </Button>
                   </div>
                 )}
               </div>

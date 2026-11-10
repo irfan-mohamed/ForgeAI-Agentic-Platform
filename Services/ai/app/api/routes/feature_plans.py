@@ -36,7 +36,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.core.access import load_user_conversation, require_org_member
+from app.core.access import load_user_conversation, parse_id, require_org_member
 from app.core.security import UserId
 from app.db.database import get_db
 from app.models.plan import ImplementationApproval, ImplementationPlan
@@ -122,7 +122,12 @@ def _get_org_id_from_conversation(db: Session, conversation_id: str, user_id: in
     convo = load_user_conversation(db, conversation_id, user_id)
     if not convo:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    return convo.organization_id, int(convo.repository_id)
+    if not convo.repository_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This conversation is not associated with any repository.",
+        )
+    return parse_id(convo.org_id, "organization id"), parse_id(convo.repository_id, "repository id")
 
 
 def _run_planner_background(
@@ -226,7 +231,7 @@ def get_feature_plan(
         raise HTTPException(status_code=404, detail="Implementation plan not found")
 
     # Verify membership
-    require_org_member(db, plan.organization_id, user_id)
+    require_org_member(db, user_id, plan.organization_id)
 
     return plan
 
@@ -253,7 +258,7 @@ def approve_plan(
     plan = db.query(ImplementationPlan).filter(ImplementationPlan.id == plan_id).first()
     if not plan:
         raise HTTPException(status_code=404, detail="Plan not found")
-    require_org_member(db, plan.organization_id, user_id)
+    require_org_member(db, user_id, plan.organization_id)
 
     if plan.status not in ("awaiting_approval",):
         raise HTTPException(
@@ -298,7 +303,7 @@ def reject_plan(
     plan = db.query(ImplementationPlan).filter(ImplementationPlan.id == plan_id).first()
     if not plan:
         raise HTTPException(status_code=404, detail="Plan not found")
-    require_org_member(db, plan.organization_id, user_id)
+    require_org_member(db, user_id, plan.organization_id)
 
     if plan.status not in ("awaiting_approval",):
         raise HTTPException(
@@ -345,7 +350,7 @@ def request_changes(
     plan = db.query(ImplementationPlan).filter(ImplementationPlan.id == plan_id).first()
     if not plan:
         raise HTTPException(status_code=404, detail="Plan not found")
-    require_org_member(db, plan.organization_id, user_id)
+    require_org_member(db, user_id, plan.organization_id)
 
     if plan.status not in ("awaiting_approval",):
         raise HTTPException(

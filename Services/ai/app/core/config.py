@@ -68,6 +68,17 @@ class Settings(BaseSettings):
     # ── Test assistance limits ────────────────────────────────────────────────
     TEST_MAX_CONTEXT_TOKENS: int = 8000
 
+    # ── Phase 4: Build Execution ──────────────────────────────────────────────
+    # GitHub personal access token (or App installation token) used to push
+    # branches and open Pull Requests after integration tests pass.
+    GITHUB_TOKEN: str = ""
+
+    # ── OpenTelemetry ─────────────────────────────────────────────────────────
+    OTEL_ENABLED: bool = False
+    OTEL_SERVICE_NAME: str = "forgeai-ai-service"
+    # gRPC endpoint of your OTLP collector (e.g. Jaeger all-in-one or OTel Collector)
+    OTEL_EXPORTER_OTLP_ENDPOINT: str = "http://localhost:4317"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

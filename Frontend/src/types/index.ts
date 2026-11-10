@@ -354,6 +354,7 @@ export interface PlanOut {
   status: 'awaiting_approval' | 'approved' | 'rejected' | 'changes_requested' | 'failed';
   version: number;
   error_message: string | null;
+  build_run_id?: string | null;
   created_at: string;
   updated_at: string;
   approvals: ApprovalOut[];
@@ -371,3 +372,7 @@ export interface RequestChangesRequest {
   feedback: string;
   comment?: string;
 }
+
+// ── AI Service: Build Runs (Phase 4) ──────────────────────────────────────────
+
+export * from './buildRun';

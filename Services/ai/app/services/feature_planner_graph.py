@@ -85,7 +85,12 @@ def validate_request_node(state: PlannerState) -> dict:
         }
 
     repo_status = status_data.get("status", "")
-    if repo_status not in ("ready", "READY"):
+    is_ready = (
+        repo_status in ("ready", "READY")
+        or bool(status_data.get("chat_ready"))
+        or bool(status_data.get("repo_map_ready"))
+    )
+    if not is_ready:
         return {
             "status": "failed",
             "error_message": (
