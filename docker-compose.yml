@@ -19,15 +19,20 @@ services:
       retries: 5
 
   # ── Zookeeper (required by Kafka) ────────────────────────────────────────────
+  # NOTE: ZooKeeper state is intentionally NOT persisted for local dev.
+  #
+  # With a persisted ZooKeeper volume, an unclean Kafka shutdown leaves the
+  # broker's ephemeral /brokers/ids/1 znode behind. The next `docker compose up`
+  # then fails with `KeeperException$NodeExistsException: NodeExists`, Kafka
+  # exits, and dependent services report "dependency failed to start".
+  # Kafka re-registers and recreates topic metadata on startup, so an ephemeral
+  # ZooKeeper is safe here and makes restarts deterministic.
   zookeeper:
     image: confluentinc/cp-zookeeper:7.6.1
     restart: always
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
-    volumes:
-      - zookeeper_data:/var/lib/zookeeper/data
-      - zookeeper_log:/var/lib/zookeeper/log
     healthcheck:
       test: ["CMD-SHELL", "nc -z localhost 2181 || exit 1"]
       interval: 10s
@@ -54,13 +59,16 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       KAFKA_LOG_RETENTION_HOURS: 168
-    volumes:
-      - kafka_data:/var/lib/kafka/data
+    # No persisted volume on purpose: Kafka's meta.properties stores the
+    # ZooKeeper cluster id, so a persisted broker volume cannot be paired with
+    # an ephemeral ZooKeeper (InconsistentClusterIdException). Topics are
+    # auto-created, and in-flight sync events can simply be re-triggered.
     healthcheck:
       test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 > /dev/null 2>&1"]
       interval: 15s
       timeout: 10s
-      retries: 5
+      retries: 10
+      start_period: 30s
 
   # ── Kafka UI (browse topics and messages) ─────────────────────────────────────
   kafka-ui:
@@ -189,6 +197,7 @@ services:
       - "8002:8002"
     volumes:
       - ./Services/ai:/app
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       DATABASE_URL: postgresql+psycopg://forgeai:Irfan%40123@db:5432/forgeai
       SECRET_KEY: ${SECRET_KEY:-change-me-in-production-use-a-long-random-string}
@@ -207,17 +216,48 @@ services:
       CORS_ORIGINS: '["http://localhost:5173","http://localhost:3000"]'
       # Phase 3 - LangGraph QA settings
       LANGGRAPH_MAX_ITERATIONS: 3
+      # Phase 4 - Build Execution (GitHub token for auto-PR)
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      # OpenTelemetry (opt-in -- set OTEL_ENABLED=true in .env to activate)
+      OTEL_ENABLED: ${OTEL_ENABLED:-false}
+      OTEL_SERVICE_NAME: forgeai-ai-service
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
     depends_on:
       db:
         condition: service_healthy
       qdrant:
         condition: service_healthy
+      otel-collector:
+        condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8002/\")'"]
       interval: 15s
       timeout: 10s
       retries: 5
       start_period: 30s
+
+  # OTel Collector
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.100.0
+    restart: always
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./infra/otel/otel-collector-config.yaml:/etc/otel/config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8888:8888"
+
+  # Jaeger (trace UI)
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    restart: always
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"
+      - "14250:14250"
+
 
   # ── Frontend ─────────────────────────────────────────────────────────────────
   frontend:
@@ -234,8 +274,5 @@ services:
 
 volumes:
   postgres_data:
-  zookeeper_data:
-  zookeeper_log:
-  kafka_data:
   qdrant_data:
   worker_clones:

@@ -27,11 +27,17 @@ from app.db.database import engine
 import app.models.conversation  # noqa: F401
 import app.models.review  # noqa: F401
 import app.models.plan  # noqa: F401 — ImplementationPlan + ImplementationApproval
+import app.models.build_run  # noqa: F401 — BuildRun (Phase 4)
 
 from app.services import review_service
 
 setup_logging()
 logger = get_logger(__name__)
+
+# ── OpenTelemetry (optional — only when OTEL_ENABLED=true) ───────────────────
+if settings.OTEL_ENABLED:
+    from app.core.telemetry import setup_telemetry
+    setup_telemetry(settings.OTEL_SERVICE_NAME, settings.OTEL_EXPORTER_OTLP_ENDPOINT)
 
 
 @asynccontextmanager
@@ -64,6 +70,7 @@ async def lifespan(application: FastAPI):
                 "review_findings",
                 "implementation_plans",
                 "implementation_approvals",
+                "build_runs",
             ]
         },
     )

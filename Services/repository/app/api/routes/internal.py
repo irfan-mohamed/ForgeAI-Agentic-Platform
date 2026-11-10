@@ -37,7 +37,9 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user_id, get_org_membership
 from app.db.database import get_db
+from app.models.github_installation import GitHubInstallation, InstallationStatus
 from app.models.repository import Repository
+from app.services import github_service
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +117,30 @@ class IndexStatus(BaseModel):
     unresolved_relationships: int
     total_relationships: int
     last_synced_at: Optional[str]
+
+
+# ── Phase 4: build execution schemas ─────────────────────────────────────────
+
+class CloneInfo(BaseModel):
+    repository_id: int
+    full_name: str
+    default_branch: str
+    # Short-lived, token-embedded clone URL. Never log this value.
+    clone_url: str
+
+
+class CreatePullRequestBody(BaseModel):
+    head: str
+    base: str
+    title: str
+    body: str = ""
+    draft: bool = False
+
+
+class CreatedPullRequest(BaseModel):
+    number: int
+    html_url: Optional[str]
+    state: str
 
 
 class RepoMapResponse(BaseModel):
@@ -780,3 +806,103 @@ def get_repo_map(
         raw_markdown=f"# Repository Map: {repo.full_name}\nStatus: {repo.status}",
     )
 
+
+# -- 10. Clone info (Phase 4 build execution) ----------------------------------
+
+def _active_installation(repo: Repository, db: Session) -> GitHubInstallation:
+    installation = db.get(GitHubInstallation, repo.github_installation_id)
+    if installation is None or installation.status != InstallationStatus.ACTIVE.value:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The GitHub installation for this repository is not active.",
+        )
+    return installation
+
+
+@router.get(
+    "/organizations/{org_id}/repositories/{repository_id}/clone-info",
+    response_model=CloneInfo,
+    summary="Get a short-lived clone URL for a repository (build execution)",
+)
+def get_clone_info(
+    org_id: int,
+    repository_id: int,
+    user_id: int = Depends(get_org_membership),
+    db: Session = Depends(get_db),
+) -> CloneInfo:
+    """
+    Returns a token-embedded HTTPS clone URL for the AI build executor.
+
+    The URL contains a GitHub installation token that expires in ~1 hour and
+    must never be logged or persisted. Used only for server-to-server calls.
+    """
+    repo = _get_ready_repository(org_id, repository_id, db, require_ready=False)
+    installation = _active_installation(repo, db)
+
+    try:
+        token = github_service.get_installation_access_token(
+            installation.github_installation_id
+        )
+        clone_url = github_service.build_clone_url(token, repo.full_name)
+    except RuntimeError as exc:
+        logger.warning("Could not build clone info", extra={"repo_id": repository_id, "error": str(exc)})
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Could not obtain a GitHub access token for this repository.",
+        )
+
+    return CloneInfo(
+        repository_id=repo.id,
+        full_name=repo.full_name,
+        default_branch=repo.default_branch,
+        clone_url=clone_url,
+    )
+
+
+# -- 11. Create pull request (Phase 4 build execution) ------------------------
+
+@router.post(
+    "/organizations/{org_id}/repositories/{repository_id}/pull-requests",
+    response_model=CreatedPullRequest,
+    status_code=status.HTTP_201_CREATED,
+    summary="Open a pull request for a generated branch (build execution)",
+)
+def create_pull_request(
+    org_id: int,
+    repository_id: int,
+    body: CreatePullRequestBody,
+    user_id: int = Depends(get_org_membership),
+    db: Session = Depends(get_db),
+) -> CreatedPullRequest:
+    """Opens a PR on GitHub for a branch that was already pushed."""
+    repo = _get_ready_repository(org_id, repository_id, db, require_ready=False)
+    installation = _active_installation(repo, db)
+
+    try:
+        token = github_service.get_installation_access_token(
+            installation.github_installation_id
+        )
+        pr = github_service.create_pull_request(
+            installation_token=token,
+            full_name=repo.full_name,
+            head=body.head,
+            base=body.base,
+            title=body.title,
+            body=body.body,
+            draft=body.draft,
+        )
+    except RuntimeError as exc:
+        logger.warning(
+            "Pull request creation failed",
+            extra={"repo_id": repository_id, "error": str(exc)},
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="GitHub rejected the pull request. Check the branch and base ref.",
+        )
+
+    return CreatedPullRequest(
+        number=pr.get("number"),
+        html_url=pr.get("html_url"),
+        state=pr.get("state", "open"),
+    )

@@ -179,6 +179,46 @@ def get_repository_metadata(
     return response.json()
 
 
+def build_clone_url(installation_token: str, full_name: str) -> str:
+    """
+    Builds an HTTPS clone URL with a short-lived installation token embedded.
+
+    Format: https://x-access-token:{token}@github.com/{owner}/{repo}.git
+
+    Git uses the token as the HTTP Basic Auth password, which GitHub accepts
+    for installation tokens. The token expires in ~1 hour.
+    """
+    return f"https://x-access-token:{installation_token}@github.com/{full_name}.git"
+
+
+def create_pull_request(
+    installation_token: str,
+    full_name: str,
+    head: str,
+    base: str,
+    title: str,
+    body: str = "",
+    draft: bool = False,
+) -> dict[str, Any]:
+    """Opens a pull request on GitHub and returns the raw PR object."""
+    url = f"{GITHUB_API}/repos/{full_name}/pulls"
+    payload = {
+        "head": head,
+        "base": base,
+        "title": title,
+        "body": body,
+        "draft": draft,
+    }
+    with httpx.Client(timeout=30.0) as client:
+        response = client.post(
+            url,
+            headers=_installation_headers(installation_token),
+            json=payload,
+        )
+    _raise_for_github_error(response, "create_pull_request")
+    return response.json()
+
+
 def build_app_installation_url(state: str) -> str:
     """
     Returns the GitHub URL that redirects a user to install the ForgeAI App.

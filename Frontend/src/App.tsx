@@ -15,6 +15,7 @@ import { CodeReviewsPage } from '@/pages/reviews/CodeReviewsPage';
 import { CodeReviewDetailPage } from '@/pages/reviews/CodeReviewDetailPage';
 import { TestAssistancePage } from '@/pages/tests/TestAssistancePage';
 import { FeaturePlansPage } from '@/pages/plans/FeaturePlansPage';
+import { BuildRunPage } from '@/pages/plans/BuildRunPage';
 import { MembersPage } from '@/pages/members/MembersPage';
 import { NotFoundPage } from '@/pages/NotFoundPage';
 
@@ -72,6 +73,10 @@ function AppRoutes() {
       <Route
         path="/organizations/:orgId/plans"
         element={<PrivateRoute><FeaturePlansPage /></PrivateRoute>}
+      />
+      <Route
+        path="/organizations/:orgId/build-runs/:buildRunId"
+        element={<PrivateRoute><BuildRunPage /></PrivateRoute>}
       />
       <Route
         path="/organizations/:orgId/members"

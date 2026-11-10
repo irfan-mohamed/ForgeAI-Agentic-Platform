@@ -66,3 +66,99 @@ def get_pull_request(repository_id: int, number: int, token: str) -> dict:
         )
 
     return response.json()
+
+
+# ── RepositoryClient class (Phase 4 Build Execution) ─────────────────────────
+
+class RepositoryClient:
+    """
+    Object-oriented client for the Repository Service internal API.
+
+    Used by the Phase 4 build execution graph to fetch a short-lived clone URL
+    and open pull requests. Requests carry a JWT for the user who triggered the
+    build so the Repository Service can enforce org membership and tenant
+    isolation on every call.
+    """
+
+    def __init__(self, user_id: int | None = None):
+        self._base = settings.REPOSITORY_SERVICE_URL.rstrip("/")
+        self._user_id = user_id
+
+    def _make_token(self) -> str:
+        if not self._user_id:
+            return ""
+        from datetime import datetime, timedelta, timezone
+
+        from jose import jwt
+
+        payload = {
+            "sub": str(self._user_id),
+            "exp": datetime.now(timezone.utc) + timedelta(minutes=15),
+        }
+        return jwt.encode(
+            payload,
+            settings.SECRET_KEY,
+            algorithm=settings.JWT_ALGORITHM,
+        )
+
+    def _headers(self) -> dict[str, str]:
+        token = self._make_token()
+        return {"Authorization": f"Bearer {token}"} if token else {}
+
+    def get_clone_info(self, org_id: int, repository_id: int) -> dict:
+        """
+        Fetch repository metadata plus a short-lived, token-embedded clone URL.
+        Returns {} on failure.
+        """
+        url = (
+            f"{self._base}/api/v1/internal/organizations/{org_id}"
+            f"/repositories/{repository_id}/clone-info"
+        )
+        try:
+            with httpx.Client(timeout=20.0) as client:
+                r = client.get(url, headers=self._headers())
+                if r.is_error:
+                    logger.warning(
+                        "get_clone_info failed: %s %s", r.status_code, r.text[:200]
+                    )
+                    return {}
+                return r.json()
+        except Exception as exc:
+            logger.warning("get_clone_info exception: %s", exc)
+            return {}
+
+    def create_pull_request(
+        self,
+        org_id: int,
+        repository_id: int,
+        head_branch: str,
+        base_branch: str,
+        title: str,
+        body: str,
+        draft: bool = False,
+    ) -> dict:
+        """Ask the Repository Service to open a Pull Request. Returns {} on failure."""
+        url = (
+            f"{self._base}/api/v1/internal/organizations/{org_id}"
+            f"/repositories/{repository_id}/pull-requests"
+        )
+        payload = {
+            "head": head_branch,
+            "base": base_branch,
+            "title": title,
+            "body": body,
+            "draft": draft,
+        }
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                r = client.post(url, json=payload, headers=self._headers())
+                if r.is_error:
+                    logger.warning(
+                        "create_pull_request failed: %s %s", r.status_code, r.text[:300]
+                    )
+                    return {}
+                return r.json()
+        except Exception as exc:
+            logger.warning("create_pull_request exception: %s", exc)
+            return {}
+
