@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: forgeai
+  labels:
+    app.kubernetes.io/name: forgeai
+    app.kubernetes.io/managed-by: kubectl

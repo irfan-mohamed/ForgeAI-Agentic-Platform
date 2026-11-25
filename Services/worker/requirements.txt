@@ -5,6 +5,7 @@ aiokafka
 
 # Database (shared PostgreSQL with repository service)
 sqlalchemy
+alembic
 psycopg
 psycopg-binary
 

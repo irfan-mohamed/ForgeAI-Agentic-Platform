@@ -39,6 +39,13 @@ if settings.OTEL_ENABLED:
     from app.core.telemetry import setup_telemetry
     setup_telemetry(settings.OTEL_SERVICE_NAME, settings.OTEL_EXPORTER_OTLP_ENDPOINT)
 
+# ── Rate limiting (slowapi + Redis) ───────────────────────────────────────────
+# limiter lives in app.core.limiter to avoid circular imports
+# (main → router → routes/messages → main would cycle).
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from app.core.limiter import limiter  # noqa: E402  singleton
+
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
@@ -101,6 +108,9 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
     app.include_router(api_router, prefix="/api/v1")
 

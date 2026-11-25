@@ -1,0 +1,26 @@
+﻿apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: forgeai-prod
+  region: ap-southeast-2
+  version: "1.35"
+
+iam:
+  withOIDC: true
+
+managedNodeGroups:
+  - name: general
+    instanceType: c7i-flex.large # Free Plan-eligible x86_64, 2 vCPUs, 4 GiB RAM
+    minSize: 2
+    maxSize: 6
+    desiredCapacity: 3
+    volumeSize: 30
+
+addons:
+  - name: vpc-cni
+  - name: coredns
+  - name: kube-proxy
+  - name: aws-ebs-csi-driver
+    attachPolicyARNs:
+      - arn:aws:iam::aws:policy/AmazonEBSCSIDriverPolicyV2

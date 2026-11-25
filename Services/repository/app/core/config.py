@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     # ── Database ──────────────────────────────────────────────────────────────
     # Shared PostgreSQL instance with the api service.
     DATABASE_URL: str = (
-        "postgresql+psycopg://forgeai:Irfan%40123@localhost:5432/forgeai"
+        "postgresql+psycopg://forgeai:@localhost:5432/forgeai"
     )
 
     # ── Service Identity ──────────────────────────────────────────────────────

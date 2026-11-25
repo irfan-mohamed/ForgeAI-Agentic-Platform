@@ -7,7 +7,9 @@ class Settings(BaseSettings):
     VERSION: str = "0.2.0"
 
     # ── Database (shared PostgreSQL) ──────────────────────────────────────────
-    DATABASE_URL: str = "postgresql+psycopg://forgeai:Irfan%40123@localhost:5432/forgeai"
+    # No default — service will fail fast at startup if DATABASE_URL is not set.
+    # Set via environment variable or .env file.
+    DATABASE_URL: str = "postgresql+psycopg://forgeai:@localhost:5432/forgeai"
 
     # ── Auth (shared JWT secret with API service) ─────────────────────────────
     SECRET_KEY: str = "change-me-in-production"
@@ -78,6 +80,13 @@ class Settings(BaseSettings):
     OTEL_SERVICE_NAME: str = "forgeai-ai-service"
     # gRPC endpoint of your OTLP collector (e.g. Jaeger all-in-one or OTel Collector)
     OTEL_EXPORTER_OTLP_ENDPOINT: str = "http://localhost:4317"
+
+    # ── Redis (rate limiting) ─────────────────────────────────────────────────
+    REDIS_URL: str = "redis://localhost:6379/0"
+    # Rate limit strings follow slowapi format: "N/period" (minute/hour/day)
+    RATE_LIMIT_AI_MESSAGES: str = "20/minute"   # per IP — chat send
+    RATE_LIMIT_AI_STREAM: str = "10/minute"     # streaming is heavier
+    RATE_LIMIT_ENABLED: bool = True
 
     model_config = SettingsConfigDict(
         env_file=".env",

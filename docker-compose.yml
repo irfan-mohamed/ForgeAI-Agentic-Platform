@@ -6,7 +6,7 @@ services:
     restart: always
     environment:
       POSTGRES_USER: forgeai
-      POSTGRES_PASSWORD: Irfan@123
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: forgeai
     ports:
       - "5432:5432"
@@ -113,10 +113,13 @@ services:
     volumes:
       - ./Services/api:/app
     environment:
-      DATABASE_URL: postgresql+psycopg://forgeai:Irfan%40123@db:5432/forgeai
-      SECRET_KEY: ${SECRET_KEY:-change-me-in-production-use-a-long-random-string}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-forgeai}:${POSTGRES_PASSWORD_ENCODED}@db:5432/${POSTGRES_DB:-forgeai}
+      SECRET_KEY: ${SECRET_KEY}
+      REDIS_URL: redis://redis:6379/0
     depends_on:
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
   # ── Repository Service ───────────────────────────────────────────────────────
@@ -131,8 +134,8 @@ services:
       - ./Services/repository:/app
       - ./Services/repository/github-app.private-key.pem:/run/github-app.pem:ro
     environment:
-      DATABASE_URL: postgresql+psycopg://forgeai:Irfan%40123@db:5432/forgeai
-      SECRET_KEY: ${SECRET_KEY:-change-me-in-production-use-a-long-random-string}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-forgeai}:${POSTGRES_PASSWORD_ENCODED}@db:5432/${POSTGRES_DB:-forgeai}
+      SECRET_KEY: ${SECRET_KEY}
       GITHUB_APP_ID: ${GITHUB_APP_ID:-}
       GITHUB_APP_NAME: ${GITHUB_APP_NAME:-forgeai-local}
       GITHUB_APP_PRIVATE_KEY_FILE: /run/github-app.pem
@@ -161,7 +164,7 @@ services:
       - worker_clones:/tmp/forgeai_worker_clones
     environment:
       # All addresses use Docker service names — NOT localhost
-      DATABASE_URL: postgresql+psycopg://forgeai:Irfan%40123@db:5432/forgeai
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-forgeai}:${POSTGRES_PASSWORD_ENCODED}@db:5432/${POSTGRES_DB:-forgeai}
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       KAFKA_CONSUMER_GROUP_ID: forgeai-worker
       KAFKA_TOPIC_REPOSITORY_EVENTS: repository.events
@@ -199,8 +202,8 @@ services:
       - ./Services/ai:/app
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
-      DATABASE_URL: postgresql+psycopg://forgeai:Irfan%40123@db:5432/forgeai
-      SECRET_KEY: ${SECRET_KEY:-change-me-in-production-use-a-long-random-string}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-forgeai}:${POSTGRES_PASSWORD_ENCODED}@db:5432/${POSTGRES_DB:-forgeai}
+      SECRET_KEY: ${SECRET_KEY}
       # Groq API (OpenAI-compatible) — free tier at console.groq.com
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       GROQ_CHAT_MODEL: ${GROQ_CHAT_MODEL:-openai/gpt-oss-120b}
@@ -222,10 +225,13 @@ services:
       OTEL_ENABLED: ${OTEL_ENABLED:-false}
       OTEL_SERVICE_NAME: forgeai-ai-service
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      REDIS_URL: redis://redis:6379/0
     depends_on:
       db:
         condition: service_healthy
       qdrant:
+        condition: service_healthy
+      redis:
         condition: service_healthy
       otel-collector:
         condition: service_started
@@ -235,6 +241,19 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
+
+  # ── Redis (rate limiting, caching) ───────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: always
+    ports:
+      - "6379:6379"
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   # OTel Collector
   otel-collector:

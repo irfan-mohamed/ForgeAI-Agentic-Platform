@@ -50,3 +50,6 @@ Thumbs.db
 # ── Docker ──────────────────────────────────────────────────────────────────────
 # Compose override files with local secrets
 docker-compose.override.yml
+
+# K8s secrets file (never commit real credentials)
+k8s/secrets.yaml

@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: forgeai
+
+resources:
+  - namespace.yaml
+  - secrets.yaml     # ⚠ Fill in REPLACE_ME values before applying
+  - postgres.yaml
+  - redis.yaml
+  - qdrant.yaml
+  - kafka.yaml
+  - api.yaml
+  - repository.yaml
+  - worker.yaml
+  - ai.yaml
+  - ingress.yaml

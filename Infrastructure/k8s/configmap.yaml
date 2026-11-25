@@ -1,0 +1,57 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: forgeai-config
+  namespace: forgeai
+data:
+  # Database (non-secret parts)
+  POSTGRES_DB: "forgeai"
+  POSTGRES_USER: "forgeai"
+  DB_HOST: "postgres-svc"
+
+  # Kafka
+  KAFKA_BOOTSTRAP_SERVERS: "kafka-svc:29092"
+  KAFKA_ENABLED: "true"
+  KAFKA_CONSUMER_GROUP_ID: "forgeai-worker"
+  KAFKA_TOPIC_REPOSITORY_EVENTS: "repository.events"
+  KAFKA_TOPIC_REPOSITORY_SYNC: "repository.sync"
+
+  # Qdrant
+  QDRANT_URL: "http://qdrant-svc:6333"
+  QDRANT_API_KEY: ""
+  QDRANT_COLLECTION_NAME: "repository_knowledge"
+
+  # Embedding (fastembed, runs locally inside worker/ai pods)
+  EMBEDDING_MODEL: "BAAI/bge-small-en-v1.5"
+  EMBEDDING_DIMENSIONS: "384"
+  CHUNK_MAX_TOKENS: "512"
+  CHUNK_OVERLAP_TOKENS: "64"
+
+  # Service discovery (internal ClusterIP names)
+  REPOSITORY_SERVICE_URL: "http://repository-svc:8001"
+
+  # LangGraph
+  LANGGRAPH_MAX_ITERATIONS: "3"
+
+  # Redis
+  REDIS_URL: "redis://redis-svc:6379/0"
+
+  # Observability
+  OTEL_ENABLED: "true"
+  OTEL_SERVICE_NAME: "forgeai"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector-svc:4317"
+
+  # CORS
+  CORS_ORIGINS: '["https://app.forgeai.io"]'
+
+  # GitHub
+  GITHUB_APP_NAME: "forgeai"
+  GITHUB_APP_PRIVATE_KEY_FILE: "/run/secrets/github-app.pem"
+  GITHUB_CALLBACK_REDIRECT_URL: "https://app.forgeai.io/github/callback"
+
+  # Groq model selection
+  GROQ_CHAT_MODEL: "openai/gpt-oss-120b"
+  GROQ_REVIEW_MODEL: "openai/gpt-oss-120b"
+
+  # Worker clone dir
+  CLONE_BASE_DIR: "/tmp/forgeai_worker_clones"

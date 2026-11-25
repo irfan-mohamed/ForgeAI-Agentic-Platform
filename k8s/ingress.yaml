@@ -1,0 +1,55 @@
+# ── Ingress ───────────────────────────────────────────────────────────────────
+# Requires nginx ingress controller: kubectl apply -f
+#   https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/cloud/deploy.yaml
+#
+# TLS: use cert-manager with Let's Encrypt.
+#   kubectl apply -f https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.yaml
+#
+# Replace forge.ai.example.com with your actual domain.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: forgeai-ingress
+  namespace: forgeai
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    # SSE requires buffering disabled so tokens reach the client immediately
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    # cert-manager annotation — comment out if not using cert-manager
+    # cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  ingressClassName: nginx
+  # tls:
+  #   - hosts:
+  #       - forge.ai.example.com
+  #     secretName: forgeai-tls
+  rules:
+    - host: forge.ai.example.com    # CHANGE ME
+      http:
+        paths:
+          # API service
+          - path: /api/v1
+            pathType: Prefix
+            backend:
+              service:
+                name: api
+                port:
+                  number: 8000
+          # Repository service
+          - path: /repo
+            pathType: Prefix
+            backend:
+              service:
+                name: repository
+                port:
+                  number: 8001
+          # AI service
+          - path: /ai
+            pathType: Prefix
+            backend:
+              service:
+                name: ai
+                port:
+                  number: 8002

@@ -26,8 +26,15 @@ export type BuildRunStatus =
   | 'queued'
   | 'building'
   | 'integration_testing'
+  | 'waiting_for_input'
   | 'pr_opened'
   | 'failed';
+
+export interface InterruptPayload {
+  build_run_id: string;
+  missing_vars: string[];
+  message: string;
+}
 
 export interface BuildRunOut {
   id: string;
@@ -44,6 +51,8 @@ export interface BuildRunOut {
   pull_request_number: number | null;
   branch_name: string | null;
   error_message: string | null;
+  env_vars?: Record<string, string> | null;
+  interrupt_payload?: InterruptPayload | null;
   started_at: string | null;
   completed_at: string | null;
   created_at: string;

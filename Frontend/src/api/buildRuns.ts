@@ -29,10 +29,20 @@ export const buildRunsApi = {
   /**
    * Create an EventSource for SSE log streaming.
    * EventSource doesn't support custom headers, so the JWT goes in the query.
+   * Emits events: log | status | complete | error | input_required
    */
   createLogStream: (buildRunId: string): EventSource => {
     const token = localStorage.getItem('access_token') ?? '';
     const url = `${API_BASE}/api/v1/build-runs/${buildRunId}/stream?token=${encodeURIComponent(token)}`;
     return new EventSource(url, { withCredentials: true });
   },
+
+  /**
+   * Resume a build run paused for env var input (HITL).
+   */
+  resumeBuildRun: (buildRunId: string, vars: Record<string, string>) =>
+    apiClient.post<{ message: string; build_run_id: string }>(
+      `/api/v1/build-runs/${buildRunId}/resume`,
+      { vars }
+    ),
 };

@@ -1,0 +1,89 @@
+# AWS ALB Ingress Controller
+# Install: https://kubernetes-sigs.github.io/aws-load-balancer-controller/
+# Replace <ACM_CERT_ARN> with your ACM certificate ARN.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: forgeai-ingress
+  namespace: forgeai
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/certificate-arn: <ACM_CERT_ARN>
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/healthcheck-path: /
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "30"
+spec:
+  rules:
+    - host: app.forgeai.io
+      http:
+        paths:
+          # API service routes
+          - path: /api/v1/auth
+            pathType: Prefix
+            backend:
+              service:
+                name: api-svc
+                port:
+                  number: 8000
+          - path: /api/v1/users
+            pathType: Prefix
+            backend:
+              service:
+                name: api-svc
+                port:
+                  number: 8000
+          - path: /api/v1/organizations
+            pathType: Prefix
+            backend:
+              service:
+                name: api-svc
+                port:
+                  number: 8000
+          # Repository service routes
+          - path: /api/v1/github
+            pathType: Prefix
+            backend:
+              service:
+                name: repository-svc
+                port:
+                  number: 8001
+          - path: /api/v1/repositories
+            pathType: Prefix
+            backend:
+              service:
+                name: repository-svc
+                port:
+                  number: 8001
+          # AI service routes
+          - path: /api/v1/conversations
+            pathType: Prefix
+            backend:
+              service:
+                name: ai-svc
+                port:
+                  number: 8002
+          - path: /api/v1/feature-plans
+            pathType: Prefix
+            backend:
+              service:
+                name: ai-svc
+                port:
+                  number: 8002
+          - path: /api/v1/build-runs
+            pathType: Prefix
+            backend:
+              service:
+                name: ai-svc
+                port:
+                  number: 8002
+          # Frontend (catch-all)
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend-svc
+                port:
+                  number: 80

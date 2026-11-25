@@ -4,6 +4,7 @@ pydantic-settings
 python-jose[cryptography]
 python-multipart
 sqlalchemy
+alembic
 psycopg
 psycopg-binary
 
