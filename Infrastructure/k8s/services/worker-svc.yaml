@@ -1,0 +1,16 @@
+# Worker has no HTTP port — this service is only used for metrics scraping.
+apiVersion: v1
+kind: Service
+metadata:
+  name: worker-svc
+  namespace: forgeai
+  labels:
+    app: worker
+spec:
+  selector:
+    app: worker
+  ports:
+    - name: metrics
+      port: 9090
+      targetPort: 9090
+  type: ClusterIP

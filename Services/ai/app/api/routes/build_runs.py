@@ -87,6 +87,8 @@ class BuildRunOut(BaseModel):
     pull_request_number: Optional[int]
     branch_name: Optional[str]
     error_message: Optional[str]
+    env_vars: Optional[dict] = None
+    interrupt_payload: Optional[dict] = None
     started_at: Optional[datetime]
     completed_at: Optional[datetime]
     created_at: datetime
@@ -99,6 +101,10 @@ class TriggerBuildResponse(BaseModel):
     build_run_id: str
     trace_id: Optional[str]
     message: str
+
+
+class ResumeInput(BaseModel):
+    vars: dict[str, str]  # {VAR_NAME: value}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -244,6 +250,42 @@ def get_build_run(
     return run
 
 
+@router.post(
+    "/build-runs/{build_run_id}/resume",
+    status_code=200,
+    summary="Resume a paused build run with human-provided env vars",
+)
+def resume_build_run(
+    build_run_id: str,
+    body: ResumeInput,
+    user_id: UserId,
+    db: DB,
+):
+    """
+    Resume a build run that is waiting_for_input (paused at HITL interrupt).
+    Provides env vars that the test runner needs, then resumes the LangGraph.
+    """
+    run = _load_build_run(db, build_run_id, user_id)
+    if run.status != "waiting_for_input":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Build run is not waiting for input (current status: {run.status})",
+        )
+
+    def _resume_in_background():
+        from app.services.build_execution_graph import resume_build_execution
+        resume_build_execution(build_run_id, {"vars": body.vars})
+
+    t = threading.Thread(
+        target=_resume_in_background,
+        daemon=True,
+        name=f"build-resume-{build_run_id[:8]}",
+    )
+    t.start()
+
+    return {"message": "Build run resumed", "build_run_id": build_run_id}
+
+
 # ── 3. SSE Log Stream ─────────────────────────────────────────────────────────
 
 TERMINAL_STATUSES = {"pr_opened", "failed"}
@@ -327,6 +369,13 @@ def stream_build_logs(
                 if run_row.status != last_status:
                     last_status = run_row.status
                     yield _event("status", _json.dumps({"status": run_row.status}))
+                    if run_row.status == "waiting_for_input":
+                        interrupt_payload = run_row.interrupt_payload or {}
+                        yield _event("input_required", _json.dumps({
+                            "build_run_id": run_row.id,
+                            "missing_vars": interrupt_payload.get("missing_vars", []),
+                            "message": interrupt_payload.get("message", "Input required to continue build"),
+                        }))
 
                 # Terminal — emit complete/error and close
                 if run_row.status in TERMINAL_STATUSES:

@@ -1,0 +1,71 @@
+# ── Worker Service ────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: forgeai
+  labels:
+    app: worker
+spec:
+  replicas: 1   # scale up for higher throughput
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      containers:
+        - name: worker
+          image: forgeai/worker:latest   # replace with your registry image
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: forgeai-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: forgeai-secrets
+                  key: POSTGRES_PASSWORD
+            - name: DATABASE_URL
+              value: "postgresql+psycopg://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@db:5432/forgeai"
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: "kafka:29092"
+            - name: KAFKA_CONSUMER_GROUP_ID
+              value: "forgeai-worker"
+            - name: KAFKA_TOPIC_REPOSITORY_EVENTS
+              value: "repository.events"
+            - name: KAFKA_TOPIC_REPOSITORY_SYNC
+              value: "repository.sync"
+            - name: GITHUB_APP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: forgeai-secrets
+                  key: GITHUB_APP_ID
+            - name: EMBEDDING_MODEL
+              value: "BAAI/bge-small-en-v1.5"
+            - name: EMBEDDING_DIMENSIONS
+              value: "384"
+            - name: QDRANT_URL
+              value: "http://qdrant:6333"
+            - name: QDRANT_COLLECTION_NAME
+              value: "repository_knowledge"
+            - name: CLONE_BASE_DIR
+              value: "/tmp/forgeai_worker_clones"
+          volumeMounts:
+            - name: worker-clones
+              mountPath: /tmp/forgeai_worker_clones
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "500m"
+            limits:
+              memory: "3Gi"
+              cpu: "2"
+      volumes:
+        - name: worker-clones
+          emptyDir: {}
+# No Service — worker is a consumer, not a server

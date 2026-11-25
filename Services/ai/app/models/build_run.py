@@ -31,7 +31,7 @@ class BuildRun(Base):
     One build execution attempt for an approved ImplementationPlan.
 
     Status transitions:
-        queued → building → integration_testing → pr_opened | failed
+        queued → building → integration_testing → waiting_for_input | pr_opened | failed
     """
 
     __tablename__ = "build_runs"
@@ -68,6 +68,12 @@ class BuildRun(Base):
 
     # [{task_id, file_path, diff}] - one entry per plan task
     generated_patches: Mapped[list | None] = mapped_column(_JSON_TYPE, nullable=True)
+
+    # User-supplied env vars for test runner (provided via HITL /resume endpoint)
+    env_vars: Mapped[dict | None] = mapped_column(_JSON_TYPE, nullable=True)
+
+    # Interrupt payload stored here so SSE stream can emit input_required event
+    interrupt_payload: Mapped[dict | None] = mapped_column(_JSON_TYPE, nullable=True)
 
     # GitHub PR details (set after pr_opened)
     pull_request_url: Mapped[str | None] = mapped_column(Text, nullable=True)

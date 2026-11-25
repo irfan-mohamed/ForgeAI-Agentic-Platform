@@ -1,0 +1,91 @@
+# ── Repository Service ────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: repository
+  namespace: forgeai
+  labels:
+    app: repository
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: repository
+  template:
+    metadata:
+      labels:
+        app: repository
+    spec:
+      containers:
+        - name: repository
+          image: forgeai/repository:latest   # replace with your registry image
+          ports:
+            - containerPort: 8001
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: forgeai-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: forgeai-secrets
+                  key: POSTGRES_PASSWORD
+            - name: DATABASE_URL
+              value: "postgresql+psycopg://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@db:5432/forgeai"
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: forgeai-secrets
+                  key: SECRET_KEY
+            - name: GITHUB_APP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: forgeai-secrets
+                  key: GITHUB_APP_ID
+            - name: GITHUB_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: forgeai-secrets
+                  key: GITHUB_WEBHOOK_SECRET
+            - name: KAFKA_ENABLED
+              value: "true"
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: "kafka:29092"
+            - name: KAFKA_TOPIC_REPOSITORY_EVENTS
+              value: "repository.events"
+            - name: KAFKA_TOPIC_REPOSITORY_SYNC
+              value: "repository.sync"
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8001
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8001
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: repository
+  namespace: forgeai
+spec:
+  selector:
+    app: repository
+  ports:
+    - port: 8001
+      targetPort: 8001
+  type: ClusterIP

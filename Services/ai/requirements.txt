@@ -25,6 +25,7 @@ tiktoken                 # Token counting
 # Agentic workflows (Phase 3)
 langgraph                # Multi-step LangGraph agent graphs
 langchain-core           # Core primitives used by langgraph
+langgraph-checkpoint-postgres  # PostgreSQL checkpointer for HITL interrupt/resume
 
 # Vector search
 qdrant-client==1.9.2     # Must match server version
@@ -35,8 +36,15 @@ httpx
 # Streaming
 sse-starlette            # Server-Sent Events for streaming AI responses
 
+# Rate limiting (backed by Redis)
+redis[hiredis]           # Redis client with fast C extension
+slowapi                  # FastAPI rate limiting — slowapi.readthedocs.io
+
 # Observability
 python-json-logger
+opentelemetry-api
+opentelemetry-sdk
+opentelemetry-exporter-otlp-proto-grpc
 
 # Testing
 pytest

@@ -1,0 +1,101 @@
+# ── AI Service ────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai
+  namespace: forgeai
+  labels:
+    app: ai
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ai
+  template:
+    metadata:
+      labels:
+        app: ai
+    spec:
+      containers:
+        - name: ai
+          image: forgeai/ai:latest   # replace with your registry image
+          ports:
+            - containerPort: 8002
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: forgeai-secrets
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: forgeai-secrets
+                  key: POSTGRES_PASSWORD
+            - name: DATABASE_URL
+              value: "postgresql+psycopg://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@db:5432/forgeai"
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: forgeai-secrets
+                  key: SECRET_KEY
+            - name: GROQ_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: forgeai-secrets
+                  key: GROQ_API_KEY
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: forgeai-secrets
+                  key: GITHUB_TOKEN
+            - name: GROQ_CHAT_MODEL
+              value: "openai/gpt-oss-120b"
+            - name: GROQ_REVIEW_MODEL
+              value: "openai/gpt-oss-120b"
+            - name: EMBEDDING_MODEL
+              value: "BAAI/bge-small-en-v1.5"
+            - name: EMBEDDING_DIMENSIONS
+              value: "384"
+            - name: QDRANT_URL
+              value: "http://qdrant:6333"
+            - name: QDRANT_COLLECTION_NAME
+              value: "repository_knowledge"
+            - name: REPOSITORY_SERVICE_URL
+              value: "http://repository:8001"
+            - name: REDIS_URL
+              value: "redis://redis:6379/0"
+            - name: OTEL_ENABLED
+              value: "false"
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8002
+            initialDelaySeconds: 60   # AI takes longer due to fastembed model download
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8002
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          resources:
+            requests:
+              memory: "1Gi"
+              cpu: "500m"
+            limits:
+              memory: "4Gi"   # fastembed + LangGraph can be memory-heavy
+              cpu: "2"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai
+  namespace: forgeai
+spec:
+  selector:
+    app: ai
+  ports:
+    - port: 8002
+      targetPort: 8002
+  type: ClusterIP

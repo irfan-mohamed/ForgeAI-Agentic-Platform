@@ -80,6 +80,31 @@ def require_org_member(db: Session, user_id: int, org_id: int) -> None:
         )
 
 
+def require_org_member_or_404(db: Session, user_id: int, org_id: int) -> None:
+    """Like require_org_member but raises HTTP 404 instead of 403.
+
+    Use this when the existence of a resource should not be revealed
+    to users who are not members of the resource's organization.
+    Callers receive a 404 whether the resource doesn't exist OR the caller
+    is not a member — preventing cross-org enumeration attacks.
+    """
+    row = db.execute(
+        text(
+            "SELECT id FROM memberships "
+            "WHERE user_id = :user_id "
+            "  AND organization_id = :org_id "
+            "  AND status = 'active' "
+            "LIMIT 1"
+        ),
+        {"user_id": user_id, "org_id": org_id},
+    ).fetchone()
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Not found.",
+        )
+
+
 def get_repository(
     db: Session,
     org_id: int,

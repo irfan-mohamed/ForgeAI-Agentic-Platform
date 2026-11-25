@@ -8,6 +8,11 @@ python-multipart
 sqlalchemy
 psycopg
 psycopg-binary
+alembic
+
+# Rate limiting (backed by Redis)
+redis[hiredis]
+slowapi
 
 # Testing
 pytest

@@ -36,7 +36,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.core.access import load_user_conversation, parse_id, require_org_member
+from app.core.access import load_user_conversation, parse_id, require_org_member, require_org_member_or_404
 from app.core.security import UserId
 from app.db.database import get_db
 from app.models.plan import ImplementationApproval, ImplementationPlan
@@ -225,14 +225,12 @@ def get_feature_plan(
     db: DB,
 ) -> PlanOut:
     """Returns the plan data, current status, and full approval audit trail."""
-    # Find plan first (without org check) to determine org_id for membership check
     plan = db.query(ImplementationPlan).filter(ImplementationPlan.id == plan_id).first()
     if not plan:
         raise HTTPException(status_code=404, detail="Implementation plan not found")
-
-    # Verify membership
-    require_org_member(db, user_id, plan.organization_id)
-
+    # Use 404 (not 403) so callers cannot probe plan IDs across organizations.
+    # A non-member gets the same response as a non-existent plan.
+    require_org_member_or_404(db, user_id, plan.organization_id)
     return plan
 
 

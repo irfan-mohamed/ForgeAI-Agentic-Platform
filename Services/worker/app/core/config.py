@@ -7,9 +7,10 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "ForgeAI Worker Service"
 
     # ── Database ──────────────────────────────────────────────────────────────
-    # Shared PostgreSQL with repository service.
+    # No default — service will fail fast at startup if DATABASE_URL is not set.
+    # Set via environment variable or .env file.
     DATABASE_URL: str = (
-        "postgresql+psycopg://forgeai:Irfan%40123@localhost:5432/forgeai"
+        "postgresql+psycopg://forgeai:@localhost:5432/forgeai"
     )
 
     # ── Kafka ─────────────────────────────────────────────────────────────────

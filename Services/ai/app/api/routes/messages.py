@@ -18,7 +18,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -31,6 +31,7 @@ from app.core.access import (
 )
 from app.core.config import settings
 from app.core.security import BearerToken, UserId
+from app.core.limiter import limiter  # rate limiter singleton (avoids circular import)
 from app.db.database import db_session, get_db
 from app.models.conversation import (
     AgentRun,
@@ -208,7 +209,9 @@ def _finish_result(
     "/conversations/{conversation_id}/messages",
     response_model=SendMessageResponse,
 )
+@limiter.limit(settings.RATE_LIMIT_AI_MESSAGES)
 def send_message(
+    request: Request,
     conversation_id: str,
     body: SendMessageRequest,
     user_id: UserId,
@@ -244,7 +247,9 @@ def send_message(
 
 
 @router.get("/conversations/{conversation_id}/messages/stream")
+@limiter.limit(settings.RATE_LIMIT_AI_STREAM)
 def stream_message(
+    request: Request,
     conversation_id: str,
     user_id: UserId,
     db: DB,

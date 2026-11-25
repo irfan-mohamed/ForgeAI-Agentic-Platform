@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: repository
+  namespace: forgeai
+  labels:
+    app: repository
+    app.kubernetes.io/component: repository
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: repository
+  template:
+    metadata:
+      labels:
+        app: repository
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: repository
+          image: 328967576122.dkr.ecr.ap-southeast-2.amazonaws.com/forgeai-repository:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8001
+          envFrom:
+            - configMapRef:
+                name: forgeai-config
+            - secretRef:
+                name: forgeai-secrets
+          env:
+            - name: DATABASE_URL
+              value: "postgresql+psycopg://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@$(DB_HOST):5432/$(POSTGRES_DB)"
+          volumeMounts:
+            - name: github-pem
+              mountPath: /run/secrets
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8001
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8001
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+      volumes:
+        - name: github-pem
+          secret:
+            secretName: github-app-pem
+            items:
+              - key: github-app.pem
+                path: github-app.pem

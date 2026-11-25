@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: forgeai
+  labels:
+    app: worker
+    app.kubernetes.io/component: worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: worker
+          image: 328967576122.dkr.ecr.ap-southeast-2.amazonaws.com/forgeai-worker:latest
+          imagePullPolicy: Always
+          # No HTTP port — this is a Kafka consumer only
+          envFrom:
+            - configMapRef:
+                name: forgeai-config
+            - secretRef:
+                name: forgeai-secrets
+          env:
+            - name: DATABASE_URL
+              value: "postgresql+psycopg://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@$(DB_HOST):5432/$(POSTGRES_DB)"
+          volumeMounts:
+            - name: github-pem
+              mountPath: /run/secrets
+              readOnly: true
+            - name: worker-clones
+              mountPath: /tmp/forgeai_worker_clones
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2000m"
+              memory: "3Gi"
+      volumes:
+        - name: github-pem
+          secret:
+            secretName: github-app-pem
+            items:
+              - key: github-app.pem
+                path: github-app.pem
+        - name: worker-clones
+          emptyDir: {}

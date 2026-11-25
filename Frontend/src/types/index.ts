@@ -1,6 +1,6 @@
 // ── ForgeAI TypeScript Domain Types ──────────────────────────────────────────
 
-export type UserStatus = 'active' | 'pending' | 'suspended';
+ export type UserStatus = 'active' | 'pending' | 'suspended';
 
 export interface User {
   id: number;

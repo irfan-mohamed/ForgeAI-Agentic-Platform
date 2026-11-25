@@ -12,7 +12,7 @@ import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Spinner } from '@/components/ui/Spinner';
 import { buildRunsApi } from '@/api/buildRuns';
-import type { BuildRunOut, BuildRunStatus, Patch, TestResults } from '@/types';
+import type { BuildRunOut, BuildRunStatus, InterruptPayload, Patch, TestResults } from '@/types';
 
 const TERMINAL_STATUSES: BuildRunStatus[] = ['pr_opened', 'failed'];
 
@@ -21,6 +21,7 @@ function StatusBadge({ status }: { status: BuildRunStatus }) {
     queued:              { label: 'Queued',              cls: 'bg-surface-700/60 text-surface-300 border-white/10',                       pulse: false },
     building:            { label: 'Building',            cls: 'bg-blue-500/20 text-blue-300 border-blue-500/40',                           pulse: true  },
     integration_testing: { label: 'Integration Testing', cls: 'bg-purple-500/20 text-purple-300 border-purple-500/40',                     pulse: true  },
+    waiting_for_input:   { label: 'Waiting for Input',   cls: 'bg-amber-500/20 text-amber-300 border-amber-500/40',                       pulse: true  },
     pr_opened:           { label: 'PR Opened',           cls: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40',                  pulse: false },
     failed:              { label: 'Failed',              cls: 'bg-red-500/20 text-red-300 border-red-500/40',                             pulse: false },
   };
@@ -32,9 +33,10 @@ function StatusBadge({ status }: { status: BuildRunStatus }) {
       }`}
     >
       <span className={`w-1.5 h-1.5 rounded-full ${
-        status === 'pr_opened' ? 'bg-emerald-400' :
-        status === 'failed'    ? 'bg-red-400' :
-        status === 'queued'    ? 'bg-surface-400' :
+        status === 'pr_opened'         ? 'bg-emerald-400' :
+        status === 'failed'            ? 'bg-red-400' :
+        status === 'waiting_for_input' ? 'bg-amber-400' :
+        status === 'queued'            ? 'bg-surface-400' :
         'bg-current'
       }`} />
       {label}
@@ -155,6 +157,69 @@ function TestResultsCard({ results }: { results: TestResults }) {
   );
 }
 
+function EnvVarInputForm({
+  payload,
+  buildRunId,
+  onResume,
+}: {
+  payload: InterruptPayload;
+  buildRunId: string;
+  onResume: () => void;
+}) {
+  const [values, setValues] = useState<Record<string, string>>(
+    Object.fromEntries(payload.missing_vars.map((v) => [v, '']))
+  );
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState('');
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSubmitting(true);
+    setSubmitError('');
+    try {
+      await buildRunsApi.resumeBuildRun(buildRunId, values);
+      onResume();
+    } catch {
+      setSubmitError('Failed to submit — please try again.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="p-5 rounded-2xl border border-amber-500/40 bg-amber-500/10">
+      <div className="flex items-start gap-3 mb-4">
+        <div className="w-9 h-9 rounded-xl bg-amber-500/20 flex items-center justify-center shrink-0 mt-0.5">
+          <span className="text-amber-300 text-base">⚠</span>
+        </div>
+        <div>
+          <h4 className="text-sm font-semibold text-amber-200">Input Required — Environment Variables</h4>
+          <p className="text-xs text-surface-400 mt-0.5">{payload.message}</p>
+        </div>
+      </div>
+      <form onSubmit={handleSubmit} className="space-y-3">
+        {payload.missing_vars.map((varName) => (
+          <div key={varName}>
+            <label className="block text-[11px] font-mono text-surface-300 mb-1">{varName}</label>
+            <input
+              type="password"
+              value={values[varName] ?? ''}
+              onChange={(e) => setValues((prev) => ({ ...prev, [varName]: e.target.value }))}
+              placeholder={`Enter value for ${varName}`}
+              className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-xs font-mono text-white placeholder-surface-600 focus:outline-none focus:border-amber-500/60"
+              required
+            />
+          </div>
+        ))}
+        {submitError && <p className="text-xs text-red-400">{submitError}</p>}
+        <Button type="submit" variant="primary" size="sm" disabled={submitting}>
+          {submitting ? 'Submitting…' : 'Resume Build →'}
+        </Button>
+      </form>
+    </div>
+  );
+}
+
 export function BuildRunPage() {
   const { orgId: orgIdStr, buildRunId } = useParams<{ orgId: string; buildRunId: string }>();
   const navigate = useNavigate();
@@ -164,6 +229,7 @@ export function BuildRunPage() {
   const [logLines, setLogLines]       = useState<string[]>([]);
   const [loading, setLoading]         = useState(true);
   const [error, setError]             = useState('');
+  const [interruptPayload, setInterruptPayload] = useState<InterruptPayload | null>(null);
   const terminalRef                   = useRef<HTMLDivElement>(null);
   const sseRef                        = useRef<EventSource | null>(null);
   const pollRef                       = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -186,6 +252,9 @@ export function BuildRunPage() {
         setBuildRun(res.data);
         if (res.data.build_log) {
           setLogLines(res.data.build_log.split('\n').filter(Boolean));
+        }
+        if (res.data.status === 'waiting_for_input' && res.data.interrupt_payload) {
+          setInterruptPayload(res.data.interrupt_payload);
         }
         if (TERMINAL_STATUSES.includes(res.data.status)) {
           isTerminal.current = true;
@@ -240,6 +309,16 @@ export function BuildRunPage() {
       sseConnected.current = false;
     });
 
+    es.addEventListener('input_required', (e: MessageEvent) => {
+      try {
+        const data: InterruptPayload = JSON.parse(e.data);
+        setInterruptPayload(data);
+        setBuildRun((prev) => (prev ? { ...prev, status: 'waiting_for_input' } : prev));
+      } catch {
+        // ignore
+      }
+    });
+
     es.addEventListener('error', (e: Event) => {
       try {
         const me = e as MessageEvent;
@@ -284,6 +363,9 @@ export function BuildRunPage() {
             return serverLines.length > prev.length ? serverLines : prev;
           });
           setTimeout(scrollToBottom, 50);
+        }
+        if (res.data.status === 'waiting_for_input' && res.data.interrupt_payload) {
+          setInterruptPayload(res.data.interrupt_payload);
         }
         if (TERMINAL_STATUSES.includes(res.data.status)) {
           isTerminal.current = true;
@@ -413,7 +495,11 @@ export function BuildRunPage() {
                 <div className="flex items-center gap-1.5">
                   <Spinner size="sm" />
                   <span className="text-[10px] text-surface-400">
-                    {buildRun.status === 'integration_testing' ? 'Running integration tests...' : 'Building...'}
+                    {buildRun.status === 'integration_testing'
+                      ? 'Running integration tests...'
+                      : buildRun.status === 'waiting_for_input'
+                      ? 'Waiting for env var input...'
+                      : 'Building...'}
                   </span>
                 </div>
               )}
@@ -435,6 +521,28 @@ export function BuildRunPage() {
               )}
             </div>
           </Card>
+
+          {/* HITL: Env Var Input Form */}
+          {interruptPayload && buildRunId && (
+            <EnvVarInputForm
+              payload={interruptPayload}
+              buildRunId={buildRunId}
+              onResume={() => {
+                setInterruptPayload(null);
+                setBuildRun((prev) => (prev ? { ...prev, status: 'integration_testing' } : prev));
+              }}
+            />
+          )}
+
+          {/* Waiting for Input fallback card */}
+          {buildRun.status === 'waiting_for_input' && !interruptPayload && (
+            <div className="p-4 rounded-2xl border border-amber-500/30 bg-amber-500/5">
+              <p className="text-sm font-semibold text-amber-300">⏸ Build Paused — Waiting for Input</p>
+              <p className="text-xs text-surface-400 mt-1">
+                The build is paused waiting for environment variables. Check above for the input form.
+              </p>
+            </div>
+          )}
 
           {/* Test Results */}
           {tr && <TestResultsCard results={tr} />}
