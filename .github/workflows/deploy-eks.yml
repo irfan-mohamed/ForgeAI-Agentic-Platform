@@ -1,0 +1,76 @@
+name: Deploy ForgeAI to EKS
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: forgeai-prod-deployment
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    needs: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ap-southeast-2
+      AWS_ACCOUNT_ID: '328967576122'
+      EKS_CLUSTER: forgeai-prod
+      K8S_NAMESPACE: forgeai
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Use short-lived AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: arn:aws:iam::328967576122:role/ForgeAIGitHubDeploy
+          aws-region: ap-southeast-2
+          allowed-account-ids: '328967576122'
+
+      - name: Build and publish all application images
+        shell: bash
+        run: |
+          set -euo pipefail
+          registry="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
+          aws ecr get-login-password | docker login --username AWS --password-stdin "$registry"
+          for service in api repository ai worker frontend; do
+            context="Services/$service"
+            if [[ "$service" == frontend ]]; then
+              context=Frontend
+            fi
+            image="$registry/forgeai-$service:$GITHUB_SHA"
+            docker build --platform linux/amd64 --tag "$image" "$context"
+            docker push "$image"
+          done
+
+      - name: Roll out image digests to EKS
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws eks update-kubeconfig --name "$EKS_CLUSTER"
+          registry="$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com"
+          services=(api repository ai worker frontend)
+          declare -A images
+          for service in "${services[@]}"; do
+            digest=$(aws ecr describe-images --repository-name "forgeai-$service" \
+              --image-ids "imageTag=$GITHUB_SHA" --query 'imageDetails[0].imageDigest' --output text)
+            [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+            images[$service]="$registry/forgeai-$service@$digest"
+            kubectl -n "$K8S_NAMESPACE" auth can-i patch "deployment/$service" --quiet
+          done
+          for service in "${services[@]}"; do
+            kubectl -n "$K8S_NAMESPACE" set image "deployment/$service" "$service=${images[$service]}"
+            kubectl -n "$K8S_NAMESPACE" rollout status "deployment/$service" --timeout=5m
+          done
