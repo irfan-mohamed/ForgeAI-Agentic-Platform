@@ -80,6 +80,7 @@ class BuildState(TypedDict, total=False):
     _generated_test_files: list[dict]
     _base_commit: str
     _docker_available: bool
+    _tested_commit: str
     env_vars: dict                 # {VAR_NAME: value} injected into test container
     interrupt_payload: dict
 
@@ -544,7 +545,10 @@ def generate_tests(state: BuildState) -> BuildState:
         if generated_test_files:
             _git("config", "user.email", "forgeai@forgeai.local", cwd=clone_dir)
             _git("config", "user.name", "ForgeAI", cwd=clone_dir)
-            _git("commit", "-m", f"forgeai: add generated tests for {len(generated_test_files)} file(s)", cwd=clone_dir)
+            committed = _git("commit", "-m", f"forgeai: add generated tests for {len(generated_test_files)} file(s)", cwd=clone_dir)
+            if committed.returncode:
+                state["error"] = "Could not commit the generated tests."
+                return state
             _log(state, f"[ForgeAI] ✓ {len(generated_test_files)} test file(s) committed")
         else:
             _log(state, "[ForgeAI] ⚠ No test files generated — continuing")
@@ -563,6 +567,9 @@ def spin_up_sandbox(state: BuildState) -> BuildState:
     with tracer.start_as_current_span("build_run.spin_up_sandbox") as span:
         _set_status(state["build_run_id"], "integration_testing")
         _log(state, "[ForgeAI] Preparing integration test sandbox…")
+        if settings.BUILD_EKS_RUNNER_NAMESPACE:
+            _log(state, "[ForgeAI] Using a separate EKS Job for integration tests")
+            return state
         # Actual container is launched in run_tests (single docker run call).
         # This node just validates that Docker is reachable.
         try:
@@ -689,6 +696,8 @@ def run_tests(state: BuildState) -> BuildState:
         clone_dir = state.get("clone_dir", "")
         docker_available = state.get("_docker_available", False)  # type: ignore[typeddict-item]
         network_mode = state.get("_network_mode", "none")
+        eks_namespace = settings.BUILD_EKS_RUNNER_NAMESPACE
+        eks_image = settings.BUILD_EKS_RUNNER_IMAGES.get(state.get("repo_full_name", ""), "")
 
         env_flags: list[str] = []
         for k, v in (state.get("env_vars") or {}).items():
@@ -706,9 +715,13 @@ def run_tests(state: BuildState) -> BuildState:
         blocked = state.get("error")
         if not blocked and not has_py and not has_js:
             blocked = "No Python or JS test files found in the checkout."
-        if not blocked and not docker_available:
+        if not blocked and eks_namespace and not eks_image:
+            blocked = "No administrator-configured EKS test profile for this repository."
+        if not blocked and eks_namespace and (network_mode != "none" or state.get("env_vars")):
+            blocked = "This EKS test runner supports offline builds without supplied credentials."
+        if not blocked and not eks_namespace and not docker_available:
             blocked = "No isolated test runner is available. Configure the runner before retrying."
-        if not blocked and has_py and network_mode == "none" and not settings.BUILD_PYTHON_TEST_IMAGE:
+        if not blocked and not eks_namespace and has_py and network_mode == "none" and not settings.BUILD_PYTHON_TEST_IMAGE:
             blocked = "Offline Python testing requires a prepared BUILD_PYTHON_TEST_IMAGE with the project dependencies."
         if blocked:
             test_results["exit_code"] = -1
@@ -720,6 +733,29 @@ def run_tests(state: BuildState) -> BuildState:
             return state
 
         _log(state, "[ForgeAI] Running integration test suite…")
+        revision = _git("rev-parse", "HEAD", cwd=clone_dir)
+        status = _git("status", "--porcelain", cwd=clone_dir)
+        if revision.returncode or status.returncode or status.stdout:
+            state["error"] = "The build checkout contains changes that were not committed for testing."
+            state["test_results"] = {**test_results, "exit_code": -1, "status": "not_run", "raw_output": state["error"]}
+            return state
+        state["_tested_commit"] = revision.stdout.decode().strip()
+
+        if eks_namespace:
+            from app.services.eks_test_runner import RunnerError, run_archive
+
+            try:
+                archive = _git("archive", "--format=tar.gz", state["_tested_commit"], cwd=clone_dir)
+                if archive.returncode:
+                    raise RunnerError("Could not archive the committed feature and tests.")
+                exit_code, output = run_archive(eks_namespace, eks_image, archive.stdout,
+                                                lambda line: _log(state, line))
+                test_results.update(exit_code=exit_code, raw_output=output)
+                _parse_text_results(output, test_results)
+            except (RunnerError, OSError, subprocess.SubprocessError) as exc:
+                state["error"] = str(exc)
+                test_results.update(exit_code=-1, status="not_run", raw_output=state["error"])
+            docker_available = False
 
         # ── 2. JS / TS test runner (if project has JS tests) ───────────────────
         if has_js and docker_available and clone_dir:
@@ -816,7 +852,7 @@ def run_tests(state: BuildState) -> BuildState:
                 _log(state, f"[ForgeAI] ✗ Docker test runner error: {exc}")
 
         # ── 6. HITL: Pause if tests failed due to missing env vars ─────────────
-        if test_results["exit_code"] != 0 and interrupt is not None:
+        if not eks_namespace and test_results["exit_code"] != 0 and interrupt is not None:
             missing_vars = _detect_missing_env_vars(test_results.get("raw_output", ""))
             if missing_vars:
                 _log(state, f"[ForgeAI] ⏸ Env vars may be missing: {missing_vars}")
@@ -908,21 +944,36 @@ def open_pr(state: BuildState) -> BuildState:
             state["error"] = "Cannot push: repository metadata unavailable."
             return state
 
-        # ── 2. Stage + commit all generated files ─────────────────────────────
-        # Ensure git user config is set (required when clone was fresh with no global config)
-        _git("config", "user.email", "forgeai@forgeai.local", cwd=clone_dir)
-        _git("config", "user.name", "ForgeAI", cwd=clone_dir)
-        _git("add", "-A", cwd=clone_dir)
-        commit_result = _git(
-            "commit", "-m",
-            f"feat: AI-generated implementation [{state['build_run_id'][:8]}]\n\n"
-            f"ForgeAI Plan: {state['plan_id']}\n"
-            f"Build Run: {state['build_run_id']}",
-            cwd=clone_dir,
-        )
-        if commit_result.returncode not in (0, 1):  # 1 = nothing to commit
-            stderr = commit_result.stderr.decode("utf-8", errors="replace")
-            _log(state, f"[ForgeAI] ⚠ git commit issue: {stderr[:200]}")
+        # Publish only the commit that the test runner actually received.
+        head = _git("rev-parse", "HEAD", cwd=clone_dir)
+        tested = state.get("_tested_commit")
+        if not tested or head.returncode or head.stdout.decode().strip() != tested:
+            state["error"] = "The current branch commit does not match the tested commit."
+            return state
+        if tested == state.get("_base_commit"):
+            state["error"] = "The build produced no changes to publish."
+            return state
+        try:
+            from app.services.repository_client import RepositoryClient
+
+            info = RepositoryClient(user_id=state["user_id"]).get_clone_info(
+                state["org_id"], state["repository_id"],
+            )
+            clone_url = info["clone_url"]
+            if info.get("default_branch", "main") != base_branch:
+                raise ValueError("The repository default branch changed.")
+            remote = _git("ls-remote", "--exit-code", "--", clone_url, f"refs/heads/{base_branch}",
+                          cwd=clone_dir, timeout=45)
+            tip = remote.stdout.decode().split()
+        except Exception:
+            state["error"] = "Could not verify the latest target branch before publishing."
+            return state
+        if remote.returncode or not tip:
+            state["error"] = "Could not read the latest target branch before publishing."
+            return state
+        if tip[0] != state.get("_base_commit"):
+            state["error"] = "The target branch moved since checkout. Start a fresh build to test against its latest commit."
+            return state
 
         # ── 3. Set authenticated remote URL before push ───────────────────────
         # IMPORTANT: The clone URL uses the GitHub App installation token which
@@ -957,13 +1008,17 @@ def open_pr(state: BuildState) -> BuildState:
 
         # ── 4. Push branch ────────────────────────────────────────────────────
         _log(state, f"[ForgeAI] Pushing branch {branch} to origin…")
-        push_result = _git("push", "--set-upstream", "origin", branch, cwd=clone_dir, timeout=60)
+        push_result = _git("push", "origin", f"{tested}:refs/heads/{branch}", cwd=clone_dir, timeout=60)
 
         if push_result.returncode != 0:
             # Collect stderr + stdout for diagnosis (git writes to both)
             stderr = (push_result.stderr or b"").decode("utf-8", errors="replace").strip()
             stdout = (push_result.stdout or b"").decode("utf-8", errors="replace").strip()
-            error_detail = (stderr + "\n" + stdout).strip()[:400] or "unknown error"
+            error_detail = re.sub(
+                r"https://[^\s/@]+@",
+                "https://[redacted]@",
+                (stderr + "\n" + stdout).strip(),
+            )[:400] or "unknown error"
             _log(state, f"[ForgeAI] ✗ Git push failed:\n{error_detail}")
             state["error"] = (
                 f"Git push to {repo_full_name} failed. "
@@ -1068,6 +1123,7 @@ def finalise(state: BuildState) -> BuildState:
         pr_url = state.get("pull_request_url")
         if not error and exit_code == 0 and not failed and not test_results.get("errors") and not pr_url:
             error = "Integration tests passed, but the pull request could not be opened. Check the GitHub output."
+            state["error"] = error
 
         if error or exit_code != 0 or failed > 0 or test_results.get("errors", 0) > 0:
             final_status = "failed"

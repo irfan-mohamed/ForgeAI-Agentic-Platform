@@ -1,0 +1,23 @@
+# Preserve the current connectivity of existing workloads when VPC CNI
+# starts enforcing policies. The sandbox namespace has its own deny-all policy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: preserve-existing-connectivity
+  namespace: forgeai
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+  ingress: [{}]
+  egress: [{}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: preserve-existing-connectivity
+  namespace: kube-system
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+  ingress: [{}]
+  egress: [{}]
