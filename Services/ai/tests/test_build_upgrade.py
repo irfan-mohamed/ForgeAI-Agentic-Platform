@@ -7,8 +7,11 @@ Unit tests for ForgeAI Build Execution Graph upgrades:
   - Retry loop routing (_should_continue_after_tests)
 """
 import os
+import json
 import tempfile
+from contextlib import nullcontext
 from subprocess import CompletedProcess
+from types import SimpleNamespace
 import pytest
 
 from app.services import build_execution_graph as build
@@ -20,6 +23,46 @@ from app.services.build_execution_graph import (
     _should_continue_after_tests,
     MAX_PATCH_RETRIES,
 )
+
+
+def test_test_only_plan_generates_git_diff_and_preserves_route(tmp_path, monkeypatch):
+    directory = str(tmp_path)
+    assert build._git("init", cwd=directory).returncode == 0
+    route = tmp_path / "chat.py"
+    route.write_text("def chat():\n    return {'reply': 'ok'}\n", encoding="utf-8")
+    assert build._git("add", "--", "chat.py", cwd=directory).returncode == 0
+    assert build._git("-c", "user.name=Test", "-c", "user.email=test@example.com",
+                      "commit", "-m", "base", cwd=directory).returncode == 0
+    base = build._git("rev-parse", "HEAD", cwd=directory).stdout.decode().strip()
+    row = SimpleNamespace(generated_patches=None)
+    db = SimpleNamespace(query=lambda *_: SimpleNamespace(filter=lambda *_: SimpleNamespace(first=lambda: row)))
+    monkeypatch.setattr(build, "db_session", lambda: nullcontext(db))
+    monkeypatch.setattr(build, "_log", lambda *_: None)
+    responses = iter([
+        "--- a/tests/test_chat.py\n+++ b/tests/test_chat.py\n@@",
+        json.dumps({"content": "from chat import chat\n\ndef test_chat():\n    assert chat() == {'reply': 'ok'}\n"}),
+    ])
+    monkeypatch.setattr(build.llm_service, "chat_completion", lambda *args, **kwargs: SimpleNamespace(content=next(responses)))
+    state = {
+        "build_run_id": "test",
+        "clone_dir": directory,
+        "_base_commit": base,
+        "plan_data": {
+            "feature_request": "Test the chat API route.",
+            "tasks": [
+                {"file_path": "chat.py", "file_action": "modify"},
+                {"file_path": "tests/test_chat.py", "file_action": "create"},
+            ],
+        },
+    }
+    build.generate_patches(state)
+    assert not state.get("error")
+    assert [patch["file_path"] for patch in row.generated_patches] == ["tests/test_chat.py"]
+    assert not (tmp_path / "tests" / "test_chat.py").exists()
+    build.apply_patches(state)
+    assert not state.get("error")
+    assert (tmp_path / "tests" / "test_chat.py").is_file()
+    assert route.read_text(encoding="utf-8") == "def chat():\n    return {'reply': 'ok'}\n"
 
 
 @pytest.mark.parametrize("valid_context", [True, False])
@@ -62,6 +105,7 @@ def test_missing_isolated_runner_never_executes_target_tests(tmp_path, monkeypat
     state = {"clone_dir": str(tmp_path), "_docker_available": False}
     build.run_tests(state)
     assert state["test_results"]["exit_code"] == -1
+    assert state["test_results"]["status"] == "not_run"
     assert "No isolated test runner" in state["error"]
 
 
