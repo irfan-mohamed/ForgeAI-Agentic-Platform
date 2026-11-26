@@ -74,6 +74,7 @@ class Settings(BaseSettings):
     # GitHub personal access token (or App installation token) used to push
     # branches and open Pull Requests after integration tests pass.
     GITHUB_TOKEN: str = ""
+    BUILD_PYTHON_TEST_IMAGE: str = ""  # Optional image with pytest, its JSON plugin, and project dependencies.
 
     # ── OpenTelemetry ─────────────────────────────────────────────────────────
     OTEL_ENABLED: bool = False
