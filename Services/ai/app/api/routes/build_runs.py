@@ -204,7 +204,7 @@ def trigger_build_run(
     )
 
     # Capture plan_data before closing the session
-    plan_data = plan.plan_data or {}
+    plan_data = {**(plan.plan_data or {}), "feature_request": plan.feature_request}
     org_id = plan.organization_id
     repository_id = plan.repository_id
 
@@ -361,8 +361,8 @@ def stream_build_logs(
                 full_log = run_row.build_log or ""
                 all_lines = [l for l in full_log.split("\n") if l]
                 new_lines = all_lines[last_log_len:]
-                for line in new_lines:
-                    yield _event("log", _json.dumps({"line": line}))
+                for index, line in enumerate(new_lines, start=last_log_len):
+                    yield _event("log", _json.dumps({"index": index, "line": line}))
                 last_log_len = len(all_lines)
 
                 # Emit status change

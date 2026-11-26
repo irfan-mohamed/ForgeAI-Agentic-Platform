@@ -7,6 +7,7 @@ export interface TestSuite {
 }
 
 export interface TestResults {
+  status?: 'not_run';
   passed: number;
   failed: number;
   errors: number;

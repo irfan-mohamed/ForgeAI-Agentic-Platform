@@ -105,7 +105,8 @@ function PatchViewer({ patches }: { patches: Patch[] }) {
 
 function TestResultsCard({ results }: { results: TestResults }) {
   const [showRaw, setShowRaw] = useState(false);
-  const allPassed = (results.failed ?? 0) === 0 && (results.errors ?? 0) === 0;
+  const didNotRun = results.status === 'not_run';
+  const allPassed = !didNotRun && results.exit_code === 0 && (results.failed ?? 0) === 0 && (results.errors ?? 0) === 0;
 
   return (
     <div className={`p-4 rounded-2xl border ${
@@ -115,8 +116,11 @@ function TestResultsCard({ results }: { results: TestResults }) {
     }`}>
       <div className="flex items-center justify-between mb-3">
         <h4 className="text-xs font-bold text-white uppercase tracking-wider">Test Results</h4>
-        <span className="text-[11px] text-surface-400">{(results.duration ?? 0).toFixed(1)}s</span>
+        {!didNotRun && <span className="text-[11px] text-surface-400">{(results.duration ?? 0).toFixed(1)}s</span>}
       </div>
+      {didNotRun ? (
+        <p className="text-xs text-surface-300 mb-3">Tests did not run.</p>
+      ) : (
       <div className="flex items-center gap-4 mb-3">
         <div className="flex items-center gap-1.5">
           <span className="w-2 h-2 rounded-full bg-emerald-400" />
@@ -138,6 +142,7 @@ function TestResultsCard({ results }: { results: TestResults }) {
           </div>
         )}
       </div>
+      )}
       {results.raw_output && (
         <>
           <button
@@ -281,7 +286,7 @@ export function BuildRunPage() {
     es.addEventListener('log', (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data);
-        setLogLines((prev) => [...prev, data.line]);
+        setLogLines((prev) => data.index < prev.length ? prev : [...prev, data.line]);
       } catch {
         setLogLines((prev) => [...prev, e.data]);
       }
