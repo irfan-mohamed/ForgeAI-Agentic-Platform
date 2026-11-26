@@ -75,6 +75,8 @@ class Settings(BaseSettings):
     # branches and open Pull Requests after integration tests pass.
     GITHUB_TOKEN: str = ""
     BUILD_PYTHON_TEST_IMAGE: str = ""  # Optional image with pytest, its JSON plugin, and project dependencies.
+    BUILD_EKS_RUNNER_NAMESPACE: str = ""
+    BUILD_EKS_RUNNER_IMAGES: dict[str, str] = {}  # GitHub full name to a trusted image digest.
 
     # ── OpenTelemetry ─────────────────────────────────────────────────────────
     OTEL_ENABLED: bool = False

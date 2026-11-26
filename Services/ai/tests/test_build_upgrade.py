@@ -8,6 +8,8 @@ Unit tests for ForgeAI Build Execution Graph upgrades:
 """
 import os
 import json
+import io
+import tarfile
 import tempfile
 from contextlib import nullcontext
 from subprocess import CompletedProcess
@@ -89,6 +91,9 @@ def test_pytest_usage_error_and_empty_collection_fail_the_gate(tmp_path, monkeyp
     monkeypatch.setattr(build, "_log", lambda *_: None)
     monkeypatch.setattr(build, "interrupt", None)
     monkeypatch.setattr(build.settings, "BUILD_PYTHON_TEST_IMAGE", "prepared-test-image")
+    monkeypatch.setattr(build, "_git", lambda *args, **kwargs: CompletedProcess(
+        args, 0, b"abc123\n" if args[0] == "rev-parse" else b"", b"",
+    ))
     monkeypatch.setattr(
         build.subprocess, "run", lambda *args, **kwargs: CompletedProcess(args, exit_code, b"", b"")
     )
@@ -107,6 +112,70 @@ def test_missing_isolated_runner_never_executes_target_tests(tmp_path, monkeypat
     assert state["test_results"]["exit_code"] == -1
     assert state["test_results"]["status"] == "not_run"
     assert "No isolated test runner" in state["error"]
+
+
+def test_eks_runner_receives_tracked_base_and_generated_tests(tmp_path, monkeypatch):
+    from app.services import eks_test_runner
+
+    directory = str(tmp_path)
+    assert build._git("init", cwd=directory).returncode == 0
+    (tmp_path / "service.py").write_text("VALUE = 7\n")
+    (tmp_path / "test_service.py").write_text("from service import VALUE\n\ndef test_value():\n    assert VALUE == 7\n")
+    assert build._git("add", "--", "service.py", "test_service.py", cwd=directory).returncode == 0
+    assert build._git("-c", "user.name=Test", "-c", "user.email=test@example.com",
+                      "commit", "-m", "candidate", cwd=directory).returncode == 0
+    image = "registry.example/test@" + "sha256:" + "a" * 64
+    repository = "example/service"
+    monkeypatch.setattr(build.settings, "BUILD_EKS_RUNNER_NAMESPACE", "test-sandbox")
+    monkeypatch.setattr(build.settings, "BUILD_EKS_RUNNER_IMAGES", {repository: image})
+    monkeypatch.setattr(build, "_log", lambda *_: None)
+
+    def run_archive(namespace, runner_image, snapshot, log):
+        assert namespace == "test-sandbox"
+        assert runner_image == image
+        with tarfile.open(fileobj=io.BytesIO(snapshot), mode="r:gz") as archive:
+            assert sorted(archive.getnames()) == ["service.py", "test_service.py"]
+            assert b"VALUE = 7" in archive.extractfile("service.py").read()
+        return 1, "1 failed, 2 passed in 0.03s"
+
+    monkeypatch.setattr(eks_test_runner, "run_archive", run_archive)
+    state = {"clone_dir": directory, "repo_full_name": repository}
+    build.run_tests(state)
+    assert state["_tested_commit"]
+    assert state["test_results"]["exit_code"] == 1
+    assert state["test_results"]["failed"] == 1
+    assert build._should_continue_after_tests(state) == "generate_patches"
+
+
+def test_pull_request_stops_when_target_branch_moved(monkeypatch):
+    from app.services import repository_client
+
+    commands = []
+
+    def git(*args, **kwargs):
+        commands.append(args[0])
+        value = b"feature\n" if args[0] == "rev-parse" else b"new-base\trefs/heads/main\n"
+        return CompletedProcess(args, 0, value, b"")
+
+    monkeypatch.setattr(build, "_git", git)
+    monkeypatch.setattr(build, "_log", lambda *_: None)
+    monkeypatch.setattr(repository_client, "RepositoryClient", lambda **_: SimpleNamespace(
+        get_clone_info=lambda *_: {"clone_url": "https://github.com/example/service.git", "default_branch": "main"},
+    ))
+    state = {
+        "test_results": {"exit_code": 0, "failed": 0, "errors": 0},
+        "_tested_commit": "feature",
+        "_base_commit": "old-base",
+        "clone_dir": "/unused",
+        "branch_name": "forgeai/build-test",
+        "repo_full_name": "example/service",
+        "org_id": 1,
+        "repository_id": 2,
+        "user_id": 3,
+    }
+    build.open_pr(state)
+    assert commands == ["rev-parse", "ls-remote"]
+    assert "target branch moved" in state["error"]
 
 
 def test_detect_missing_env_vars():
