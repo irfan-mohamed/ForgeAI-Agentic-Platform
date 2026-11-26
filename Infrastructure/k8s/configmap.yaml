@@ -45,7 +45,7 @@ data:
   CORS_ORIGINS: '["https://app.forgeai.io"]'
 
   # GitHub
-  GITHUB_APP_NAME: "forgeai"
+  GITHUB_APP_NAME: "forgeai-local"
   GITHUB_APP_PRIVATE_KEY_FILE: "/run/secrets/github-app.pem"
   GITHUB_CALLBACK_REDIRECT_URL: "https://app.forgeai.io/github/callback"
 
