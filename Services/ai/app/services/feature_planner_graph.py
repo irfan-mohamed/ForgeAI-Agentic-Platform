@@ -281,6 +281,9 @@ Generate a detailed, step-by-step implementation plan. Each task must be:
 - Self-contained and independently executable
 - Specific about which file to change and exactly what to add/modify
 - In the correct dependency order (no task should depend on an unfinished later task)
+- Target exactly one repository-relative file. Use paths found in the repository evidence for existing files.
+- For requests to test existing behavior, prioritize test files and fixtures. Change production code only if the request requires a specific production fix.
+- Describe test execution in acceptance criteria. The build runner runs tests after applying the patches, so omit separate tasks to run commands.
 
 Respond ONLY with valid JSON in this exact format:
 {{

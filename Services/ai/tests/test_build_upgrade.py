@@ -1,6 +1,6 @@
 """
 Unit tests for ForgeAI Build Execution Graph upgrades:
-  - Better diff application (_apply_diff_to_file)
+  - Strict patch application and integration-test exit handling
   - JS/TS test detection (_has_js_tests, _detect_js_test_runner)
   - Missing env var detection (_detect_missing_env_vars)
   - Test block extraction from testing_agent markdown (_extract_test_blocks)
@@ -8,10 +8,11 @@ Unit tests for ForgeAI Build Execution Graph upgrades:
 """
 import os
 import tempfile
+from subprocess import CompletedProcess
 import pytest
 
+from app.services import build_execution_graph as build
 from app.services.build_execution_graph import (
-    _apply_diff_to_file,
     _detect_js_test_runner,
     _detect_missing_env_vars,
     _extract_test_blocks,
@@ -21,41 +22,47 @@ from app.services.build_execution_graph import (
 )
 
 
-def test_apply_diff_to_new_file():
-    with tempfile.TemporaryDirectory() as td:
-        target = os.path.join(td, "new_file.py")
-        diff = """--- /dev/null
-+++ b/new_file.py
-@@ -0,0 +1,3 @@
-+def hello():
-+    return 'world'
-"""
-        _apply_diff_to_file(target, diff)
-        assert os.path.isfile(target)
-        with open(target, "r", encoding="utf-8") as f:
-            content = f.read()
-        assert "def hello():" in content
-        assert "return 'world'" in content
+@pytest.mark.parametrize("valid_context", [True, False])
+def test_patch_applies_only_if_base_context_matches(tmp_path, monkeypatch, valid_context):
+    monkeypatch.setattr(build, "_log", lambda *_: None)
+    assert build._git("init", cwd=str(tmp_path)).returncode == 0
+    target = tmp_path / "route.py"
+    target.write_text("return_value = 1\n", encoding="utf-8")
+    assert build._git("add", "route.py", cwd=str(tmp_path)).returncode == 0
+    old_value = 1 if valid_context else 99
+    diff = (
+        "--- a/route.py\n+++ b/route.py\n@@ -1 +1 @@\n"
+        f"-return_value = {old_value}\n+return_value = 2\n"
+    )
+    state = {"clone_dir": str(tmp_path), "generated_patches": [{"file_path": "route.py", "diff": diff}]}
+    build.apply_patches(state)
+    assert bool(state.get("error")) is not valid_context
+    assert target.read_text(encoding="utf-8") == f"return_value = {2 if valid_context else 1}\n"
 
 
-def test_apply_diff_to_existing_file():
-    with tempfile.TemporaryDirectory() as td:
-        target = os.path.join(td, "mod.py")
-        with open(target, "w", encoding="utf-8") as f:
-            f.write("def foo():\n    return 1\n")
+@pytest.mark.parametrize("exit_code", [4, 5])
+def test_pytest_usage_error_and_empty_collection_fail_the_gate(tmp_path, monkeypatch, exit_code):
+    (tmp_path / "test_route.py").touch()
+    monkeypatch.setattr(build, "_log", lambda *_: None)
+    monkeypatch.setattr(build, "interrupt", None)
+    monkeypatch.setattr(build.settings, "BUILD_PYTHON_TEST_IMAGE", "prepared-test-image")
+    monkeypatch.setattr(
+        build.subprocess, "run", lambda *args, **kwargs: CompletedProcess(args, exit_code, b"", b"")
+    )
+    state = {"clone_dir": str(tmp_path), "_docker_available": True}
+    build.run_tests(state)
+    assert state["test_results"]["exit_code"] == exit_code
+    assert state["_retry_count"] == 1
 
-        diff = """--- a/mod.py
-+++ b/mod.py
-@@ -1,2 +1,2 @@
- def foo():
--    return 1
-+    return 42
-"""
-        _apply_diff_to_file(target, diff)
-        with open(target, "r", encoding="utf-8") as f:
-            content = f.read()
-        assert "return 42" in content
-        assert "return 1" not in content
+
+def test_missing_isolated_runner_never_executes_target_tests(tmp_path, monkeypatch):
+    (tmp_path / "test_route.py").touch()
+    monkeypatch.setattr(build, "_log", lambda *_: None)
+    monkeypatch.setattr(build.subprocess, "run", lambda *args, **kwargs: pytest.fail("Unexpected test execution"))
+    state = {"clone_dir": str(tmp_path), "_docker_available": False}
+    build.run_tests(state)
+    assert state["test_results"]["exit_code"] == -1
+    assert "No isolated test runner" in state["error"]
 
 
 def test_detect_missing_env_vars():

@@ -29,6 +29,7 @@ import tempfile
 import textwrap
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path, PurePosixPath
 from typing import Any, TypedDict
 
 from langgraph.graph import END, StateGraph
@@ -77,6 +78,8 @@ class BuildState(TypedDict, total=False):
     _retry_count: int              # patch-regen attempt counter
     _failed_test_output: str       # last failing test output
     _generated_test_files: list[dict]
+    _base_commit: str
+    _docker_available: bool
     env_vars: dict                 # {VAR_NAME: value} injected into test container
     interrupt_payload: dict
 
@@ -168,6 +171,44 @@ def init_run(state: BuildState) -> BuildState:
 
 # ── Node 2: generate_patches ──────────────────────────────────────────────────
 
+def _workspace_path(directory: str, path: str) -> Path:
+    relative = PurePosixPath(path)
+    root = Path(directory).resolve()
+    target = root / relative
+    if (
+        not path or relative.is_absolute() or ":" in path or "\\" in path
+        or {".git", ".."}.intersection(relative.parts)
+        or target == root or not target.resolve().is_relative_to(root)
+    ):
+        raise ValueError("Expected a safe repository-relative path.")
+    return target
+
+
+def _checkout_base(state: BuildState) -> str:
+    if state.get("_base_commit"):
+        clone_dir = state["clone_dir"]
+        if _git("reset", "--hard", state["_base_commit"], cwd=clone_dir).returncode:
+            raise RuntimeError("Could not reset the build checkout.")
+        return clone_dir
+
+    if not state.get("repo_clone_url"):
+        raise RuntimeError("Repository clone URL is unavailable.")
+    clone_dir = tempfile.mkdtemp(prefix="forgeai_build_")
+    state["clone_dir"] = clone_dir
+    _log(state, "[ForgeAI] Cloning the repository base branch…")
+    if _git("clone", "--depth", "1", "--branch", state["base_branch"], "--",
+            state["repo_clone_url"], clone_dir).returncode:
+        raise RuntimeError("Could not clone the repository base branch.")
+    revision = _git("rev-parse", "HEAD", cwd=clone_dir)
+    if revision.returncode or _git("checkout", "-b", state["branch_name"], cwd=clone_dir).returncode:
+        raise RuntimeError("Could not prepare the build branch.")
+    if _git("remote", "set-url", "origin", f"https://github.com/{state['repo_full_name']}.git",
+            cwd=clone_dir).returncode:
+        raise RuntimeError("Could not remove clone credentials from the workspace.")
+    state["_base_commit"] = revision.stdout.decode().strip()
+    return clone_dir
+
+
 def generate_patches(state: BuildState) -> BuildState:
     tracer = get_tracer("forgeai.build")
     with tracer.start_as_current_span("build_run.generate_patches") as span:
@@ -178,6 +219,29 @@ def generate_patches(state: BuildState) -> BuildState:
         _log(state, f"[ForgeAI] Generating patches for {len(tasks)} task(s)…")
 
         patches: list[dict] = []
+        state["generated_patches"] = patches
+        state["_generated_test_files"] = []
+        try:
+            clone_dir = _checkout_base(state)
+        except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
+            state["error"] = str(exc)
+            _log(state, f"[ForgeAI] ✗ {state['error']}")
+            return state
+
+        related_sources = {}
+        for affected in (plan_data.get("affected_files") or [])[:8]:
+            if not isinstance(affected, dict):
+                continue
+            path = affected.get("path") or affected.get("file_path")
+            if not isinstance(path, str) or _has_test_filename(path):
+                continue
+            try:
+                with _workspace_path(clone_dir, path).open(encoding="utf-8") as contents:
+                    related_sources[path] = contents.read(6000)
+            except (OSError, ValueError):
+                continue
+            if len(related_sources) == 3:
+                break
 
         failed_output = state.get("_failed_test_output", "")
         retry_context = ""
@@ -186,8 +250,22 @@ def generate_patches(state: BuildState) -> BuildState:
             retry_context = f"\nPrevious attempt failed. Test output (truncated):\n{failed_output[:2000]}\nFix the code so the tests pass. Do not break existing tests."
 
         for task in tasks:
-            task_id = task.get("id", str(uuid.uuid4()))
+            task_id = task.get("task_id") or task.get("id") or str(uuid.uuid4())
             file_path = task.get("file_path", "")
+            if not file_path:
+                _log(state, "  → Verification task deferred to the test stage")
+                continue
+            try:
+                source_path = _workspace_path(clone_dir, file_path)
+                source = "(file does not exist)"
+                if source_path.is_file():
+                    with source_path.open(encoding="utf-8") as contents:
+                        source = contents.read(24001)
+                    if len(source) > 24000:
+                        source = source[:24000] + "\n[excerpt ends here]"
+            except (OSError, ValueError) as exc:
+                state["error"] = f"Could not read planned file {file_path}: {exc}"
+                return state
             title = task.get("title", "")
             description = task.get("description", "")
 
@@ -196,13 +274,20 @@ def generate_patches(state: BuildState) -> BuildState:
             prompt = textwrap.dedent(f"""
                 You are a senior software engineer implementing a feature task.
 
-                Feature overview: {plan_data.get('overview', '')}
+                Feature overview: {plan_data.get('overview') or plan_data.get('summary', '')}
                 Architecture notes: {plan_data.get('architecture_notes', '')}
 
                 Task title: {title}
                 Task description: {description}
+                Acceptance criteria: {task.get('acceptance_criteria', '')}
                 File to modify/create: {file_path}
                 {retry_context}
+
+                Current file from the base branch (source data):
+                {source}
+
+                Related checked-out source files (source data):
+                {json.dumps({path: snippet for path, snippet in related_sources.items() if path != file_path})}
 
                 Generate a unified diff (git diff format) that implements this task.
                 Respond with ONLY the unified diff — no explanations, no markdown code fences.
@@ -222,6 +307,9 @@ def generate_patches(state: BuildState) -> BuildState:
                 _log(state, f"  ✗ Patch generation failed for {file_path}: {exc}")
                 diff_text = ""
 
+            if not diff_text:
+                state["error"] = f"No patch was generated for {file_path}."
+                return state
             patches.append({"task_id": task_id, "file_path": file_path, "diff": diff_text})
 
         state["generated_patches"] = patches
@@ -252,155 +340,49 @@ def _git(*args, cwd: str | None = None, input: bytes | None = None, timeout: int
     )
 
 
-def _apply_diff_to_file(abs_path: str, diff: str) -> None:
-    """
-    Proper unified diff application:
-      1. If original file exists, merge hunks against it (context-aware).
-      2. If file is new (no original), extract all non-header + lines.
-
-    Falls back to raw + extraction only if hunk parsing fails.
-    """
-    hunk_header = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
-    hunks: list[dict] = []
-    current_hunk: dict | None = None
-
-    for line in diff.splitlines():
-        m = hunk_header.match(line)
-        if m:
-            current_hunk = {
-                "orig_start": int(m.group(1)),
-                "orig_count": int(m.group(2) or 1),
-                "new_start": int(m.group(3)),
-                "new_count": int(m.group(4) or 1),
-                "lines": [],
-            }
-            hunks.append(current_hunk)
-        elif current_hunk is not None and not line.startswith("--- ") and not line.startswith("+++ "):
-            current_hunk["lines"].append(line)
-
-    if os.path.isfile(abs_path) and hunks:
-        try:
-            with open(abs_path, encoding="utf-8", errors="replace") as fh:
-                orig_lines = fh.readlines()
-
-            result_lines = list(orig_lines)
-            offset = 0
-
-            for hunk in hunks:
-                orig_start = max(0, hunk["orig_start"] - 1 + offset)
-                lines_to_replace = hunk["orig_count"]
-                additions: list[str] = []
-
-                for hl in hunk["lines"]:
-                    if hl.startswith("-"):
-                        pass
-                    elif hl.startswith("+"):
-                        additions.append(hl[1:] if hl[1:].endswith("\n") else hl[1:] + "\n")
-                    else:  # context
-                        ctx = hl[1:] if hl.startswith(" ") else hl
-                        additions.append(ctx if ctx.endswith("\n") else ctx + "\n")
-
-                result_lines[orig_start : orig_start + lines_to_replace] = additions
-                offset += len(additions) - lines_to_replace
-
-            with open(abs_path, "w", encoding="utf-8") as fh:
-                fh.writelines(result_lines)
-            return
-        except Exception:
-            pass  # fall through to raw extraction
-
-    # New file or hunk parsing fallback — extract non-header + lines
-    plus_lines = [
-        l[1:] for l in diff.splitlines()
-        if l.startswith("+") and not l.startswith("+++")
-    ]
-    with open(abs_path, "w", encoding="utf-8") as fh:
-        fh.write("\n".join(plus_lines))
-
-
 def apply_patches(state: BuildState) -> BuildState:
     tracer = get_tracer("forgeai.build")
     with tracer.start_as_current_span("build_run.apply_patches") as span:
-        clone_url = state.get("repo_clone_url", "")
-        branch = state["branch_name"]
-
-        # Create a temp dir for the clone / workspace
-        clone_dir = tempfile.mkdtemp(prefix="forgeai_build_")
-        state["clone_dir"] = clone_dir
-
-        cloned_ok = False
-
-        if clone_url:
-            _log(state, "[ForgeAI] Cloning repository…")
-            try:
-                result = subprocess.run(
-                    ["git", "clone", "--depth", "1", clone_url, clone_dir],
-                    capture_output=True, timeout=120,
-                )
-                if result.returncode == 0:
-                    # Set git identity so commits work without a global config
-                    _git("config", "user.email", "forgeai@forgeai.local", cwd=clone_dir)
-                    _git("config", "user.name", "ForgeAI", cwd=clone_dir)
-                    _git("checkout", "-b", branch, cwd=clone_dir)
-                    _log(state, f"[ForgeAI] ✓ Cloned  |  branch: {branch}")
-                    cloned_ok = True
-                else:
-                    err = result.stderr.decode("utf-8", errors="replace")[:300]
-                    _log(state, f"[ForgeAI] ⚠ Clone failed: {err} — writing files directly")
-            except FileNotFoundError:
-                _log(state, "[ForgeAI] ⚠ git not found on PATH — writing files directly")
-            except Exception as exc:
-                _log(state, f"[ForgeAI] ⚠ Clone error: {exc} — writing files directly")
-        else:
-            _log(state, "[ForgeAI] ⚠ No clone URL — writing generated files to sandbox dir")
-
-        # Init a bare git repo in clone_dir so `git apply` works even without a clone
-        if not cloned_ok:
-            subprocess.run(["git", "init", clone_dir], capture_output=True)
-            subprocess.run(["git", "-C", clone_dir, "config", "user.email", "forgeai@local"],
-                           capture_output=True)
-            subprocess.run(["git", "-C", clone_dir, "config", "user.name", "ForgeAI"],
-                           capture_output=True)
-            subprocess.run(["git", "-C", clone_dir, "checkout", "-b", branch],
-                           capture_output=True)
+        if state.get("error"):
+            return state
+        clone_dir = state["clone_dir"]
 
         # Apply each patch
         applied = 0
         for patch in state.get("generated_patches", []):
-            fp = (patch.get("file_path") or "").replace("\\", "/").lstrip("/")
+            fp = patch["file_path"]
             diff = patch.get("diff", "")
-            if not diff or not fp:
-                continue
-            # Reject path traversal / absolute Windows paths from the LLM
-            if ".." in fp.split("/") or (len(fp) > 1 and fp[1] == ":"):
-                _log(state, f"  ✗ Refusing unsafe path: {fp!r}")
-                continue
+            try:
+                _workspace_path(clone_dir, fp)
+            except ValueError:
+                state["error"] = f"Unsafe patch path: {fp!r}"
+                return state
 
-            abs_path = os.path.join(clone_dir, fp)
-            os.makedirs(os.path.dirname(abs_path) or clone_dir, exist_ok=True)
-
-            # Try `git apply` first; fall back to writing the file directly
-            proc = _git("apply", "--index", "--whitespace=fix", "-",
-                        cwd=clone_dir, input=diff.encode())
+            patch_bytes = (diff.rstrip("\n") + "\n").encode()
+            summary = _git("apply", "--numstat", "-z", "-", cwd=clone_dir, input=patch_bytes)
+            paths = [entry.split(b"\t", 2)[-1] for entry in summary.stdout.split(b"\0") if entry]
+            if summary.returncode or paths != [fp.encode()]:
+                state["error"] = f"Invalid patch or unexpected target for {fp}."
+                _log(state, f"[ForgeAI] ✗ {state['error']}")
+                return state
+            proc = _git("apply", "--index", "--whitespace=fix", "-", cwd=clone_dir, input=patch_bytes)
             if proc.returncode == 0:
                 _log(state, f"  ✓ Applied patch: {fp}")
                 applied += 1
             else:
-                # Direct file write fallback (works even when diff header is malformed)
-                _log(state, f"  ⚠ git apply failed for {fp} — applying diff to file directly")
-                try:
-                    _apply_diff_to_file(abs_path, diff)
-                    _git("add", fp, cwd=clone_dir)
-                    applied += 1
-                except Exception as exc2:
-                    _log(state, f"  ✗ Could not write {fp}: {exc2}")
+                detail = proc.stderr.decode("utf-8", errors="replace").strip()
+                state["error"] = f"Patch did not apply to {fp}: {detail[:400]}"
+                _log(state, f"  ✗ {state['error']}")
+                return state
 
         # Commit all written files so the workspace is clean for tests
         if applied > 0:
             _git("config", "user.email", "forgeai@local", cwd=clone_dir)
             _git("config", "user.name", "ForgeAI", cwd=clone_dir)
-            _git("add", "-A", cwd=clone_dir)
-            _git("commit", "-m", f"forgeai: apply {applied} patch(es)", cwd=clone_dir)
+            committed = _git("commit", "-m", f"forgeai: apply {applied} patch(es)", cwd=clone_dir)
+            if committed.returncode:
+                state["error"] = "Could not commit the applied patches."
+                return state
 
         _log(state, f"[ForgeAI] ✓ {applied}/{len(state.get('generated_patches', []))} patch(es) applied")
         span.set_attribute("applied_patches", applied)
@@ -439,6 +421,8 @@ def generate_tests(state: BuildState) -> BuildState:
     Call testing_agent to generate tests for every file touched in this build,
     write them into the clone_dir, and commit them alongside the feature patches.
     """
+    if state.get("error"):
+        return state
     tracer = get_tracer("forgeai.build")
     with tracer.start_as_current_span("build_run.generate_tests") as span:
         from app.services.testing_agent import run_testing_agent, TargetNotFound
@@ -464,7 +448,7 @@ def generate_tests(state: BuildState) -> BuildState:
 
         for patch in patches:
             fp = patch.get("file_path", "")
-            if not fp:
+            if not fp or os.path.basename(fp) == "conftest.py" or _has_test_filename(fp):
                 continue
 
             try:
@@ -477,10 +461,11 @@ def generate_tests(state: BuildState) -> BuildState:
                 )
                 test_blocks = _extract_test_blocks(result.content)
                 for test_path, test_code in test_blocks:
-                    abs_test = os.path.join(clone_dir, test_path)
-                    os.makedirs(os.path.dirname(abs_test) or clone_dir, exist_ok=True)
-                    with open(abs_test, "w", encoding="utf-8") as fh:
-                        fh.write(test_code)
+                    abs_test = _workspace_path(clone_dir, test_path)
+                    if not _has_test_filename(test_path) or abs_test.exists():
+                        continue
+                    abs_test.parent.mkdir(parents=True, exist_ok=True)
+                    abs_test.write_text(test_code, encoding="utf-8")
                     _git("add", test_path, cwd=clone_dir)
                     generated_test_files.append({"file_path": test_path})
                     _log(state, f"  ✓ Generated test: {test_path}")
@@ -505,6 +490,8 @@ def generate_tests(state: BuildState) -> BuildState:
 # ── Node 4: spin_up_sandbox ───────────────────────────────────────────────────
 
 def spin_up_sandbox(state: BuildState) -> BuildState:
+    if state.get("error"):
+        return state
     tracer = get_tracer("forgeai.build")
     with tracer.start_as_current_span("build_run.spin_up_sandbox") as span:
         _set_status(state["build_run_id"], "integration_testing")
@@ -520,10 +507,10 @@ def spin_up_sandbox(state: BuildState) -> BuildState:
                 _log(state, "[ForgeAI] ✓ Docker daemon reachable — sandbox ready")
                 state["_docker_available"] = True  # type: ignore[typeddict-unknown-key]
             else:
-                _log(state, "[ForgeAI] ⚠ Docker daemon not responding — will run pytest locally")
+                _log(state, "[ForgeAI] ⚠ Docker daemon not responding — isolated runner unavailable")
                 state["_docker_available"] = False  # type: ignore[typeddict-unknown-key]
         except FileNotFoundError:
-            _log(state, "[ForgeAI] ⚠ Docker CLI not found — will run pytest locally")
+            _log(state, "[ForgeAI] ⚠ Docker CLI not found — isolated runner unavailable")
             state["_docker_available"] = False  # type: ignore[typeddict-unknown-key]
         except Exception as exc:
             _log(state, f"[ForgeAI] ⚠ Docker check failed: {exc}")
@@ -540,8 +527,12 @@ def spin_up_sandbox(state: BuildState) -> BuildState:
 #   3 — internal pytest error
 #   4 — command-line usage error (e.g. unknown flag, plugin not installed)
 #   5 — no tests were collected
-# Both 4 and 5 mean "no Python tests exist" — treat as OK.
-_PYTEST_NO_TESTS_EXITS = {4, 5}
+def _has_test_filename(path: str) -> bool:
+    name = os.path.basename(path)
+    return (
+        (name.endswith(".py") and (name.startswith("test_") or name.endswith("_test.py")))
+        or bool(re.search(r"\.(test|spec)\.[jt]sx?$", name))
+    )
 
 
 def _has_python_tests(directory: str) -> bool:
@@ -647,16 +638,19 @@ def run_tests(state: BuildState) -> BuildState:
         has_py = _has_python_tests(clone_dir) if clone_dir else False
         has_js = _has_js_tests(clone_dir) if clone_dir else False
 
-        if not has_py and not has_js:
-            _log(state, "[ForgeAI] ⚠ No Python or JS test files found in repo")
-            _log(state, "[ForgeAI] ✓ Skipping tests — treating test gate as passed")
-            test_results["raw_output"] = (
-                "No Python or JS test files found.\n"
-                "ForgeAI skipped the test gate — patches look good."
-            )
+        blocked = state.get("error")
+        if not blocked and not has_py and not has_js:
+            blocked = "No Python or JS test files found in the checkout."
+        if not blocked and not docker_available:
+            blocked = "No isolated test runner is available. Configure the runner before retrying."
+        if not blocked and has_py and network_mode == "none" and not settings.BUILD_PYTHON_TEST_IMAGE:
+            blocked = "Offline Python testing requires a prepared BUILD_PYTHON_TEST_IMAGE with the project dependencies."
+        if blocked:
+            test_results["exit_code"] = -1
+            test_results["raw_output"] = blocked
             state["test_results"] = test_results
-            span.set_attribute("tests.skipped", True)
-            span.set_attribute("tests.reason", "no_test_files")
+            state["error"] = blocked
+            _log(state, f"[ForgeAI] ✗ {blocked}")
             return state
 
         # ── 2. JS / TS test runner (if project has JS tests) ───────────────────
@@ -675,7 +669,8 @@ def run_tests(state: BuildState) -> BuildState:
                         "-w", "/workspace",
                         "node:20-slim",
                         "bash", "-c",
-                        f"{install_cmd} && {test_cmd}",
+                        f"mkdir -p /tmp/project && cp -a /workspace/. /tmp/project/ && "
+                        f"cd /tmp/project && {install_cmd} && {test_cmd}",
                     ],
                     capture_output=True, timeout=300,
                 )
@@ -691,11 +686,20 @@ def run_tests(state: BuildState) -> BuildState:
                     _parse_text_results(raw_js, test_results)
                 _log(state, f"[ForgeAI] JS test exit={proc.returncode}")
             except Exception as exc:
-                _log(state, f"[ForgeAI] ⚠ JS test runner error: {exc}")
+                test_results["exit_code"] = -1
+                test_results["raw_output"] += f"\nJS test runner error: {exc}"
+                _log(state, f"[ForgeAI] ✗ JS test runner error: {exc}")
 
         # ── 3. Python Docker runner ────────────────────────────────────────────
         if has_py and docker_available and clone_dir:
-            _log(state, "[ForgeAI] Launching isolated test container (python:3.11-slim)…")
+            image = settings.BUILD_PYTHON_TEST_IMAGE or "python:3.11-slim"
+            setup = ""
+            if not settings.BUILD_PYTHON_TEST_IMAGE:
+                setup = (
+                    "python -m pip install -q pytest pytest-json-report; "
+                    "if [ -f requirements.txt ]; then python -m pip install -q -r requirements.txt; fi; "
+                )
+            _log(state, f"[ForgeAI] Launching isolated test container ({image})…")
             try:
                 proc = subprocess.run(
                     [
@@ -704,29 +708,32 @@ def run_tests(state: BuildState) -> BuildState:
                         *env_flags,
                         "-v", f"{clone_dir}:/workspace:ro",
                         "-w", "/workspace",
-                        "python:3.11-slim",
+                        image,
                         "bash", "-c",
                         (
-                            "pip install -q pytest pytest-json-report 2>/dev/null && "
-                            "pytest --json-report --json-report-file=/tmp/report.json "
-                            "--tb=short -q . 2>&1 ;"
-                            "echo '---JSON---' && cat /tmp/report.json 2>/dev/null || echo '{}'"
+                            f"set -e; {setup}"
+                            "exit_code=0; "
+                            "python -m pytest --json-report --json-report-file=/tmp/report.json "
+                            "--tb=short -q . || exit_code=$?; "
+                            "if [ -f /tmp/report.json ]; then echo '---JSON---'; cat /tmp/report.json; fi; "
+                            "exit \"$exit_code\""
                         ),
                     ],
                     capture_output=True, timeout=300,
                 )
-                raw = proc.stdout.decode("utf-8", errors="replace")
-                test_results["exit_code"] = proc.returncode
+                raw = (proc.stdout + proc.stderr).decode("utf-8", errors="replace")
+                if proc.returncode:
+                    test_results["exit_code"] = proc.returncode
                 test_results["raw_output"] += f"\n{raw[-6000:]}"
 
                 try:
                     marker = raw.rfind("---JSON---")
                     blob = raw[marker + 10:].strip() if marker >= 0 else "{}"
-                    report = json.loads(blob)
+                    report, _ = json.JSONDecoder().raw_decode(blob)
                     summary = report.get("summary", {})
                     test_results["passed"] += summary.get("passed", 0)
                     test_results["failed"] += summary.get("failed", 0)
-                    test_results["errors"] += summary.get("errors", 0)
+                    test_results["errors"] += summary.get("error", 0)
                     test_results["duration"] = round(report.get("duration", 0.0), 2)
                 except Exception:
                     _parse_text_results(raw, test_results)
@@ -739,48 +746,6 @@ def run_tests(state: BuildState) -> BuildState:
                 test_results["exit_code"] = -1
                 test_results["raw_output"] += f"\n{exc}"
                 _log(state, f"[ForgeAI] ✗ Docker test runner error: {exc}")
-
-        # ── 4. Python Local fallback (Docker unavailable) ──────────────────────
-        elif has_py and clone_dir and os.path.isdir(clone_dir):
-            _log(state, "[ForgeAI] Running pytest locally inside the AI container…")
-            try:
-                proc = subprocess.run(
-                    ["python", "-m", "pytest", "--tb=short", "-q", clone_dir],
-                    capture_output=True, timeout=120,
-                )
-                raw = (proc.stdout + proc.stderr).decode("utf-8", errors="replace")
-                test_results["exit_code"] = proc.returncode
-                test_results["raw_output"] += f"\n{raw[-6000:]}"
-                _parse_text_results(raw, test_results)
-            except Exception as exc:
-                test_results["exit_code"] = -1
-                test_results["raw_output"] += f"\n{exc}"
-                _log(state, f"[ForgeAI] ✗ Local pytest error: {exc}")
-        elif not has_js:
-            _log(state, "[ForgeAI] ⚠ No test environment — skipping tests")
-            test_results["raw_output"] = "Skipped — no test runner available"
-
-        # ── 5. Exit code normalisation ─────────────────────────────────────────
-        exit_code = test_results["exit_code"]
-        no_tests_exit = exit_code in _PYTEST_NO_TESTS_EXITS
-        generated_tests = state.get("_generated_test_files", [])
-
-        if no_tests_exit:
-            if generated_tests:
-                # We generated tests but pytest still collected nothing — real failure.
-                # This means the test files have broken imports or wrong collection paths.
-                test_results["exit_code"] = 1
-                test_results["raw_output"] += (
-                    "\n[ForgeAI] Generated test files exist but pytest collected nothing. "
-                    "Check import paths and conftest.py."
-                )
-                _log(state, "  ⚠ Generated tests exist but pytest collected nothing — marking as FAILED")
-            else:
-                # No test files anywhere — acceptable, pass through
-                test_results["exit_code"] = 0
-                reason = "no tests collected" if exit_code == 5 else "pytest usage error (no tests)"
-                test_results["raw_output"] += f"\n[ForgeAI] exit={exit_code} → treated as passed ({reason})"
-                _log(state, f"[ForgeAI] ⚠ pytest exit={exit_code} ({reason}) → treating as passed")
 
         # ── 6. HITL: Pause if tests failed due to missing env vars ─────────────
         if test_results["exit_code"] != 0 and interrupt is not None:
@@ -824,13 +789,12 @@ def run_tests(state: BuildState) -> BuildState:
             state["_retry_count"] = state.get("_retry_count", 0) + 1
             _log(state, f"[ForgeAI] Tests failed — attempt {state['_retry_count']}/{MAX_PATCH_RETRIES + 1}")
 
-        status_icon = "✓" if test_results["exit_code"] == 0 and test_results["failed"] == 0 else "✗"
+        status_icon = "✓" if not any(test_results[key] for key in ("exit_code", "failed", "errors")) else "✗"
         _log(
             state,
             f"[ForgeAI] {status_icon} Tests complete — "
             f"passed={test_results['passed']}  failed={test_results['failed']}  "
-            f"errors={test_results['errors']}  exit={test_results['exit_code']}"
-            + (" (no tests → OK)" if no_tests else ""),
+            f"errors={test_results['errors']}  exit={test_results['exit_code']}",
         )
         state["test_results"] = test_results
         span.set_attribute("tests.passed", test_results["passed"])
@@ -852,7 +816,7 @@ def open_pr(state: BuildState) -> BuildState:
 
         if exit_code != 0 or failed > 0 or errors > 0:
             _log(state, "[ForgeAI] ✗ Tests did not pass — skipping PR creation")
-            state["error"] = (
+            state["error"] = state.get("error") or (
                 f"Integration tests failed (exit={exit_code}, failed={failed}, errors={errors}). "
                 "Review the test output above."
             )
@@ -1035,7 +999,7 @@ def finalise(state: BuildState) -> BuildState:
         failed = test_results.get("failed", 0)
         pr_url = state.get("pull_request_url")
 
-        if error or exit_code != 0 or failed > 0:
+        if error or exit_code != 0 or failed > 0 or test_results.get("errors", 0) > 0:
             final_status = "failed"
             _log(state, "[ForgeAI] ✗ Build run FAILED")
         else:
@@ -1094,6 +1058,9 @@ def _should_continue_after_tests(state: BuildState) -> str:
       - fail + retries remain  → generate_patches (loop back with failure feedback)
       - fail + retries over    → open_pr (open_pr will detect failed tests and stop)
     """
+    if state.get("error"):
+        return "open_pr"
+
     test_results = state.get("test_results") or {}
     exit_code = test_results.get("exit_code", -1)
     failed = test_results.get("failed", 0)
